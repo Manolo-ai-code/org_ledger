@@ -126,6 +126,21 @@ class _TestLedger extends LedgerProvider {
   bool get isNearBudgetLimit => budgetUsageRaw >= 0.8;
 
   @override
+  double get overspentAmount {
+    final double over = totalSpent - totalBudget;
+    return over > 0 ? over : 0;
+  }
+
+  @override
+  double projectedRemaining(double amount) => totalBudget - (totalSpent + amount);
+
+  @override
+  bool wouldExceedBudget(double amount) {
+    if (totalBudget <= 0) return false;
+    return amount > remainingBudget;
+  }
+
+  @override
   int get pendingApprovalsCount =>
       items.where((Expense expense) => expense.isInFlight).length;
 
@@ -220,7 +235,7 @@ class _TestSession extends UserRoleProvider {
   bool get canReviewExpenses => false;
 
   @override
-  String get actorLabel => '${user.name} · ${user.role.label}';
+  String get actorLabel => ' · ';
 }
 
 void main() {
@@ -266,10 +281,12 @@ void main() {
     final _TestSession session = _TestSession(
       user: const AppUser(
         id: 1,
+        username: 'bm',
         name: 'Bea Manalo',
         email: 'bm@orgledger.app',
         password: 'hash',
         role: UserRole.businessManager,
+        isActive: true,
       ),
       db: db,
     );
@@ -291,11 +308,19 @@ void main() {
 
     expect(find.text('Dashboard'), findsOneWidget);
     expect(find.text('Total budget'), findsOneWidget);
-    expect(find.text('Budget burn-down'), findsOneWidget);
-    expect(find.text('86.7%'), findsWidgets);
+    expect(find.text('Approaching budget limit'), findsOneWidget);
 
-    // The dashboard is scrollable on a narrow phone; bring the donut chart
-    // into view before asserting on it.
+    // The dashboard is scrollable on a narrow phone; bring the runway/chart
+    // and donut chart into view before asserting on them.
+    await tester.dragUntilVisible(
+      find.text('Budget runway'),
+      find.byType(ListView),
+      const Offset(0, -220),
+    );
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('Budget runway'), findsOneWidget);
+    expect(find.textContaining('86.7'), findsWidgets);
+
     await tester.dragUntilVisible(
       find.text('Spending by category'),
       find.byType(ListView),
@@ -307,3 +332,4 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 }
+

@@ -126,10 +126,12 @@ class _StubSession extends UserRoleProvider {
       ? null
       : AppUser(
           id: 3,
+          username: 'treasurer',
           name: 'Tessa Cruz',
           email: 'treasurer@orgledger.app',
           password: 'hash',
           role: role!,
+          isActive: true,
         );
 
   @override

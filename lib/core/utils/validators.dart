@@ -2,6 +2,12 @@ import 'app_format.dart';
 
 /// Reusable form validators shared by login, registration and expense forms.
 abstract final class Validators {
+  static final RegExp _emailPattern = RegExp(
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$",
+  );
+  static final RegExp _usernamePattern = RegExp(r'^[a-z0-9._-]+$');
+
+
   static String? requiredText(String? value, {String label = 'This field'}) {
     if (value == null || value.trim().isEmpty) {
       return '$label is required';
@@ -20,15 +26,52 @@ abstract final class Validators {
     return null;
   }
 
+  /// Username is the primary sign-in identifier (lowercased, normalized).
+  static String? username(String? value) {
+    final String candidate = value?.trim().toLowerCase() ?? '';
+    if (candidate.isEmpty) {
+      return 'Username is required';
+    }
+    if (candidate.length < 3 || candidate.length > 30) {
+      return 'Use 3 to 30 characters';
+    }
+    if (!_usernamePattern.hasMatch(candidate)) {
+      return 'Use letters, numbers, dot, underscore, or hyphen';
+    }
+    return null;
+  }
+
+  /// Login accepts a username or, for backward compatibility, an email.
+  static String? loginIdentifier(String? value) {
+    final String candidate = value?.trim() ?? '';
+    if (candidate.isEmpty) {
+      return 'Username is required';
+    }
+    if (candidate.contains('@')) {
+      return email(candidate);
+    }
+    return username(candidate);
+  }
+
+  /// Required contact email (legacy/strict contexts).
   static String? email(String? value) {
     final String candidate = value?.trim() ?? '';
     if (candidate.isEmpty) {
       return 'Email is required';
     }
-    final RegExp pattern = RegExp(
-      r'^[A-Za-z0-9.!#$%&’*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$',
-    );
-    if (!pattern.hasMatch(candidate)) {
+    if (!_emailPattern.hasMatch(candidate)) {
+      return 'Enter a valid email address';
+    }
+    return null;
+  }
+
+  /// Optional contact email: empty is allowed, otherwise must be valid.
+  static String? optionalEmail(String? value) {
+    final String candidate = value?.trim() ?? '';
+    if (candidate.isEmpty) {
+      return null;
+    }
+    if (!_emailPattern.hasMatch(candidate)) {
       return 'Enter a valid email address';
     }
     return null;

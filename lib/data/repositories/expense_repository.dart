@@ -21,15 +21,122 @@ class ExpenseRepository {
     LEFT JOIN events ev ON ev.id = e.event_id
   ''';
 
-  Future<List<OrgEvent>> getEvents() async {
+  Future<List<OrgEvent>> getEvents({bool includeArchived = false}) async {
     final Database db = await _db.database;
+    final bool hasArchiveColumn = await _hasColumn(db, _db.eventsTable, 'is_archived');
     final List<Map<String, Object?>> rows = await db.query(
       _db.eventsTable,
-      orderBy: 'id ASC',
+      where: (!includeArchived && hasArchiveColumn) ? 'is_archived = 0' : null,
+      orderBy: hasArchiveColumn ? 'is_archived ASC, id ASC' : 'id ASC',
     );
     return rows
         .map((Map<String, Object?> row) => OrgEvent.fromMap(row))
         .toList(growable: false);
+  }
+
+  Future<int> createEvent({
+    required String title,
+    required double startingBudget,
+    String eventType = 'General',
+    String schoolYear = '',
+  }) async {
+    final Database db = await _db.database;
+    final DateTime now = DateTime.now();
+    final Map<String, Object?> values = <String, Object?>{
+      'title': title.trim(),
+      'starting_budget': _safeBudget(startingBudget),
+    };
+    if (await _hasColumn(db, _db.eventsTable, 'event_type')) {
+      values['event_type'] =
+          eventType.trim().isEmpty ? 'General' : eventType.trim();
+    }
+    if (await _hasColumn(db, _db.eventsTable, 'school_year')) {
+      values['school_year'] = schoolYear.trim();
+    }
+    if (await _hasColumn(db, _db.eventsTable, 'is_archived')) {
+      values['is_archived'] = 0;
+    }
+    if (await _hasColumn(db, _db.eventsTable, 'created_at')) {
+      values['created_at'] = now.toIso8601String();
+    }
+    if (await _hasColumn(db, _db.eventsTable, 'updated_at')) {
+      values['updated_at'] = now.toIso8601String();
+    }
+    return db.insert(_db.eventsTable, values);
+  }
+
+  Future<int> updateEvent({
+    required int eventId,
+    required String title,
+    required double startingBudget,
+    String? eventType,
+    String? schoolYear,
+  }) async {
+    final Database db = await _db.database;
+    final DateTime now = DateTime.now();
+    final Map<String, Object?> values = <String, Object?>{
+      'title': title.trim(),
+      'starting_budget': _safeBudget(startingBudget),
+    };
+    if (eventType != null && await _hasColumn(db, _db.eventsTable, 'event_type')) {
+      values['event_type'] =
+          eventType.trim().isEmpty ? 'General' : eventType.trim();
+    }
+    if (schoolYear != null &&
+        await _hasColumn(db, _db.eventsTable, 'school_year')) {
+      values['school_year'] = schoolYear.trim();
+    }
+    if (await _hasColumn(db, _db.eventsTable, 'updated_at')) {
+      values['updated_at'] = now.toIso8601String();
+    }
+    return db.update(
+      _db.eventsTable,
+      values,
+      where: 'id = ?',
+      whereArgs: <Object?>[eventId],
+    );
+  }
+
+  /// Archives or restores an event. Archived events remain in the ledger (and
+  /// keep their expenses/history) but are hidden from the default active view.
+  Future<int> setEventArchived({
+    required int eventId,
+    required bool archived,
+  }) async {
+    final Database db = await _db.database;
+    if (!await _hasColumn(db, _db.eventsTable, 'is_archived')) {
+      return 0;
+    }
+    final Map<String, Object?> values = <String, Object?>{
+      'is_archived': archived ? 1 : 0,
+    };
+    if (await _hasColumn(db, _db.eventsTable, 'updated_at')) {
+      values['updated_at'] = DateTime.now().toIso8601String();
+    }
+    return db.update(
+      _db.eventsTable,
+      values,
+      where: 'id = ?',
+      whereArgs: <Object?>[eventId],
+    );
+  }
+
+  double _safeBudget(double value) {
+    if (!value.isFinite || value < 0) {
+      return 0;
+    }
+    return value;
+  }
+
+  Future<bool> _hasColumn(Database db, String table, String column) async {
+    final List<Map<String, Object?>> rows =
+        await db.rawQuery('PRAGMA table_info($table)');
+    for (final Map<String, Object?> row in rows) {
+      if ((row['name']?.toString() ?? '') == column) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<OrgEvent?> getEvent(int id) async {

@@ -7,12 +7,20 @@ abstract final class AppConstants {
   static const String organizationName = 'Student Organization';
   static const String tagline = 'Transparent finances. Faster liquidations.';
   static const String databaseName = 'org_ledger.db';
-  static const int databaseVersion = 1;
+
+  /// Bumped for additive migrations (v2: username/member/active-status,
+  /// v3: budget event metadata/archiving). Migrations must preserve local data.
+  static const int databaseVersion = 3;
+
+  /// Compile-time flag for evaluation/demo builds. When false (default) the app
+  /// does not seed demo accounts/data or expose demo credentials in the UI.
+  static const bool demoSeed =
+      bool.fromEnvironment('DEMO_SEED', defaultValue: false);
 
   /// Demo password shared by every seeded officer account.
   ///
-  /// The seeded accounts are intentionally easy to log into for evaluation.
-  /// Passwords are still stored as salted SHA-256 digests, never as plain text.
+  /// Only used when [demoSeed] is enabled. Passwords are stored as salted
+  /// digests, never as plain text.
   static const String demoPassword = 'password123';
 
   /// Static application salt. A production deployment should use a per-user
@@ -24,4 +32,5 @@ abstract final class AppConstants {
   // Settings keys persisted in SQLite so the app needs no extra dependency.
   static const String settingSessionUserId = 'session_user_id';
   static const String settingThemeMode = 'theme_mode';
+  static const String settingSelectedEventId = 'selected_event_id';
 }

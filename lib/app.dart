@@ -16,6 +16,7 @@ import 'providers/ledger_provider.dart';
 import 'providers/theme_provider.dart';
 import 'providers/user_role_provider.dart';
 import 'screens/auth/login_screen.dart';
+import 'screens/auth/setup_screen.dart';
 import 'screens/home/home_shell.dart';
 import 'screens/splash/splash_screen.dart';
 
@@ -98,6 +99,7 @@ class _OrgLedgerAppState extends State<OrgLedgerApp> {
       syncService: deps.syncService,
       connectivityService: deps.connectivityService,
       pdfService: deps.pdfService,
+      databaseHelper: deps.databaseHelper,
     );
     _auditProvider = AuditProvider(deps.auditRepository);
   }
@@ -258,7 +260,7 @@ class _AuthGateState extends State<AuthGate> {
         return;
       }
       try {
-        await ledger.initialize();
+        await ledger.initialize(viewer: session.currentUser);
       } catch (_) {
         // The provider stores a friendly error and the dashboard exposes a
         // retry; never trap the officer on the splash screen.
@@ -277,6 +279,9 @@ class _AuthGateState extends State<AuthGate> {
 
     if (session.isRestoring) {
       return const SplashScreen();
+    }
+    if (session.needsBootstrap && !session.isAuthenticated) {
+      return const SetupScreen();
     }
     if (!session.isAuthenticated) {
       return const LoginScreen();

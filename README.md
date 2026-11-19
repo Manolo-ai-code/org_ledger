@@ -163,6 +163,52 @@ with a gallery alternative.
 
 ---
 
+## Branding assets
+
+- App logo: `assets/branding/logo.png` (declared in `pubspec.yaml`).
+- In-app mark: `lib/widgets/brand_mark.dart` renders the logo asset with a
+  programmatic fallback.
+- Android launcher icons and the native launch splash are generated from the same
+  logo under `android/app/src/main/res/`.
+
+---
+
+## Building a release APK (GitHub distribution)
+
+OrgLedger is distributed as sideloadable APKs (not via Play Store).
+
+- **Package:** `com.orgledger.app` (Android `applicationId` / `namespace`).
+- **Version:** taken from `pubspec.yaml` (`version: 1.0.0+1`).
+- **Signing:** release builds are **debug-signed by default** for simple
+  sideloading. For consistent updates across machines, configure a release
+  keystore via `android/key.properties` and update
+  `android/app/build.gradle.kts` (do **not** commit `key.properties` or
+  keystores; they are ignored by `.gitignore`).
+
+```bash
+flutter clean
+flutter pub get
+flutter analyze
+flutter test
+flutter build apk --release
+# Optional: smaller per-ABI artifacts for GitHub releases
+flutter build apk --release --split-per-abi
+```
+
+Outputs:
+
+- `build/app/outputs/flutter-apk/app-release.apk` (universal)
+- `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`
+- `build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk`
+- `build/app/outputs/flutter-apk/app-x86_64-release.apk` (when split)
+
+> **Note:** if your project path contains parentheses/spaces and the Android/Gradle
+> build fails with path-related errors, run the build from a junction/symlink path
+> without those characters (the output is still written to the project `build/`
+> directory).
+
+---
+
 ## Data & privacy
 
 - Passwords are hashed with a static salt + SHA-256. This is appropriate for an

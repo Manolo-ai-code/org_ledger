@@ -76,7 +76,7 @@ class _AuditLogScreenState extends State<AuditLogScreen> {
           children: <Widget>[
             const Text('Audit trail'),
             Text(
-              'Append-only activity history',
+                      '·',
               style: theme.textTheme.labelSmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -360,6 +360,30 @@ class _AuditTile extends StatelessWidget {
     }
     if (text.contains('sync')) {
       return const _AuditVisual(Icons.cloud_sync_outlined, AppColors.info);
+    }
+    if (text.contains('deactivat')) {
+      return const _AuditVisual(Icons.person_off_outlined, AppColors.danger);
+    }
+    if (text.contains('reactivat')) {
+      return const _AuditVisual(Icons.person_add_alt_1_outlined, AppColors.emerald);
+    }
+    if (text.contains('appoint') || text.contains('election') || text.contains('turnover')) {
+      return const _AuditVisual(Icons.manage_accounts_outlined, AppColors.info);
+    }
+    if (text.contains('reset password') || text.contains('changed account password') || text.contains('change your password')) {
+      return const _AuditVisual(Icons.lock_reset_rounded, AppColors.warning);
+    }
+    if (text.contains('deactivat')) {
+      return const _AuditVisual(Icons.person_off_outlined, AppColors.danger);
+    }
+    if (text.contains('reactivat')) {
+      return const _AuditVisual(Icons.person_add_alt_1_outlined, AppColors.emerald);
+    }
+    if (text.contains('appoint') || text.contains('election') || text.contains('turnover')) {
+      return const _AuditVisual(Icons.manage_accounts_outlined, AppColors.info);
+    }
+    if (text.contains('reset password') || text.contains('changed account password') || text.contains('change your password')) {
+      return const _AuditVisual(Icons.lock_reset_rounded, AppColors.warning);
     }
     if (text.contains('sign in') || text.contains('signed in')) {
       return const _AuditVisual(Icons.login_rounded, AppColors.emerald);

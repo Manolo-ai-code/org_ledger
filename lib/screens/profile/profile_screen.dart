@@ -6,18 +6,254 @@ import '../../core/constants/expense_status.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/role_visuals.dart';
 import '../../core/utils/app_format.dart';
+import '../../core/utils/validators.dart';
 import '../../data/models/app_user.dart';
 import '../../data/models/user_role.dart';
 import '../../providers/audit_provider.dart';
 import '../../providers/ledger_provider.dart';
 import '../../providers/theme_provider.dart';
 import '../../providers/user_role_provider.dart';
+import '../../widgets/banners.dart';
 import '../../widgets/brand_mark.dart';
 import '../../widgets/dialogs.dart';
 
 /// Account, permissions, appearance and sign-out.
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
+
+  Future<void> _editProfile(BuildContext context, AppUser user) async {
+    final UserRoleProvider session = context.read<UserRoleProvider>();
+    final formKey = GlobalKey<FormState>();
+    final nameController = TextEditingController(text: user.name);
+    final emailController = TextEditingController(text: user.email);
+    String? error;
+
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setState) {
+            final bool busy = session.isBusy;
+            return AlertDialog(
+              title: const Text('Edit profile'),
+              content: Form(
+                key: formKey,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      TextFormField(
+                        controller: nameController,
+                        decoration: const InputDecoration(
+                          labelText: 'Full name',
+                          prefixIcon: Icon(Icons.badge_outlined),
+                        ),
+                        validator: Validators.name,
+                        textCapitalization: TextCapitalization.words,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: emailController,
+                        decoration: const InputDecoration(
+                          labelText: 'Contact email (optional)',
+                          prefixIcon: Icon(Icons.mail_outline_rounded),
+                        ),
+                        keyboardType: TextInputType.emailAddress,
+                        validator: Validators.optionalEmail,
+                        autocorrect: false,
+                      ),
+                      if (error != null) ...<Widget>[
+                        const SizedBox(height: 12),
+                        ErrorBanner(message: error ?? ''),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              actions: <Widget>[
+                TextButton(
+                  onPressed: busy ? null : () => Navigator.of(context).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          if (formKey.currentState?.validate() != true) {
+                            return;
+                          }
+                          final result = await session.updateProfile(
+                            name: nameController.text,
+                            email: emailController.text,
+                          );
+                          if (!context.mounted) return;
+                          if (result.success) {
+                            Navigator.of(context).pop();
+                            if (dialogContext.mounted) {
+                              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                                SnackBar(content: Text(result.message)),
+                              );
+                            }
+                          } else {
+                            setState(() => error = result.message);
+                          }
+                        },
+                  child: busy
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _changePassword(BuildContext context) async {
+    final UserRoleProvider session = context.read<UserRoleProvider>();
+    final formKey = GlobalKey<FormState>();
+    final currentController = TextEditingController();
+    final newController = TextEditingController();
+    final confirmController = TextEditingController();
+    bool obscureCurrent = true;
+    bool obscureNew = true;
+    bool obscureConfirm = true;
+    String? error;
+
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setState) {
+            final bool busy = session.isBusy;
+            return AlertDialog(
+              title: const Text('Change password'),
+              content: Form(
+                key: formKey,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      TextFormField(
+                        controller: currentController,
+                        obscureText: obscureCurrent,
+                        decoration: InputDecoration(
+                          labelText: 'Current password',
+                          prefixIcon: const Icon(Icons.lock_outline_rounded),
+                          suffixIcon: IconButton(
+                            onPressed: () => setState(
+                              () => obscureCurrent = !obscureCurrent,
+                            ),
+                            icon: Icon(
+                              obscureCurrent
+                                  ? Icons.visibility_outlined
+                                  : Icons.visibility_off_outlined,
+                            ),
+                          ),
+                        ),
+                        validator: (v) => (v == null || v.isEmpty)
+                            ? 'Enter your current password'
+                            : null,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: newController,
+                        obscureText: obscureNew,
+                        decoration: InputDecoration(
+                          labelText: 'New password',
+                          helperText: 'At least 8 characters',
+                          prefixIcon: const Icon(Icons.lock_reset_rounded),
+                          suffixIcon: IconButton(
+                            onPressed: () =>
+                                setState(() => obscureNew = !obscureNew),
+                            icon: Icon(
+                              obscureNew
+                                  ? Icons.visibility_outlined
+                                  : Icons.visibility_off_outlined,
+                            ),
+                          ),
+                        ),
+                        validator: Validators.password,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: confirmController,
+                        obscureText: obscureConfirm,
+                        decoration: InputDecoration(
+                          labelText: 'Confirm new password',
+                          prefixIcon: const Icon(Icons.lock_reset_rounded),
+                          suffixIcon: IconButton(
+                            onPressed: () => setState(
+                              () => obscureConfirm = !obscureConfirm,
+                            ),
+                            icon: Icon(
+                              obscureConfirm
+                                  ? Icons.visibility_outlined
+                                  : Icons.visibility_off_outlined,
+                            ),
+                          ),
+                        ),
+                        validator: (v) => Validators.confirmPassword(
+                          v,
+                          newController.text,
+                        ),
+                      ),
+                      if (error != null) ...<Widget>[
+                        const SizedBox(height: 12),
+                        ErrorBanner(message: error ?? ''),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              actions: <Widget>[
+                TextButton(
+                  onPressed: busy ? null : () => Navigator.of(context).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          if (formKey.currentState?.validate() != true) {
+                            return;
+                          }
+                          final result = await session.changePassword(
+                            currentPassword: currentController.text,
+                            newPassword: newController.text,
+                          );
+                          if (!context.mounted) return;
+                          if (result.success) {
+                            Navigator.of(context).pop();
+                            if (dialogContext.mounted) {
+                              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                                SnackBar(content: Text(result.message)),
+                              );
+                            }
+                          } else {
+                            setState(() => error = result.message);
+                          }
+                        },
+                  child: busy
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Change'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
 
   Future<void> _signOut(BuildContext context) async {
     final UserRoleProvider session = context.read<UserRoleProvider>();
@@ -128,13 +364,24 @@ class ProfileScreen extends StatelessWidget {
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              user.email,
+                              user.displayHandle,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: theme.textTheme.bodySmall?.copyWith(
                                 color: theme.colorScheme.onSurfaceVariant,
                               ),
                             ),
+                            if (user.email.isNotEmpty) ...<Widget>[
+                              const SizedBox(height: 1),
+                              Text(
+                                user.email,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
@@ -184,6 +431,34 @@ class ProfileScreen extends StatelessWidget {
                       ],
                     ),
                   ),
+                  if (user.mustChangePassword) ...<Widget>[
+                    const SizedBox(height: 10),
+                    const ErrorBanner(
+                      message:
+                          'Your password was reset. Please change it to keep your account secure.',
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: <Widget>[
+                      OutlinedButton.icon(
+                        onPressed: session.isBusy
+                            ? null
+                            : () => _editProfile(context, user),
+                        icon: const Icon(Icons.edit_outlined, size: 18),
+                        label: const Text('Edit profile'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: session.isBusy
+                            ? null
+                            : () => _changePassword(context),
+                        icon: const Icon(Icons.lock_reset_rounded, size: 18),
+                        label: const Text('Change password'),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -205,8 +480,10 @@ class ProfileScreen extends StatelessWidget {
                     label: 'Submit expenses',
                     granted: session.canSubmitExpenses,
                     detail: session.canSubmitExpenses
-                        ? 'You can add expenses with receipts.'
-                        : 'Reviewers cannot create expense records.',
+                        ? (role == UserRole.member
+                            ? 'You can submit and view your own expense requests.'
+                            : 'You can add expenses with receipts.')
+                        : 'You cannot submit expenses with this account.',
                   ),
                   _PermissionRow(
                     icon: Icons.fact_check_outlined,
@@ -214,7 +491,9 @@ class ProfileScreen extends StatelessWidget {
                     granted: session.canReviewExpenses,
                     detail: session.canReviewExpenses
                         ? 'Your tier acts on ${ExpenseStatus.label(session.reviewableStatus)}.'
-                        : 'Your records enter the Treasurer queue.',
+                        : (role == UserRole.member
+                            ? 'Members cannot review approvals.'
+                            : 'Submitters do not review approvals.'),
                   ),
                   _PermissionRow(
                     icon: Icons.picture_as_pdf_outlined,
@@ -252,8 +531,8 @@ class ProfileScreen extends StatelessWidget {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            'There is no in-app role switcher. To act as another officer, '
-                            'sign out and sign in with that account.',
+                            'Your role and status are managed by the organization adviser. '
+                            'There is no in-app role switcher.',
                             style: theme.textTheme.labelSmall?.copyWith(
                               color: theme.colorScheme.onSurfaceVariant,
                             ),

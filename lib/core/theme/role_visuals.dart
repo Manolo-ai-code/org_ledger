@@ -6,6 +6,8 @@ import '../../data/models/user_role.dart';
 abstract final class RoleVisuals {
   static IconData icon(UserRole role) {
     switch (role) {
+      case UserRole.member:
+        return Icons.person_outline_rounded;
       case UserRole.businessManager:
         return Icons.business_center_outlined;
       case UserRole.secretary:
@@ -23,6 +25,8 @@ abstract final class RoleVisuals {
 
   static Color color(UserRole role) {
     switch (role) {
+      case UserRole.member:
+        return const Color(0xFF4B6356);
       case UserRole.businessManager:
         return const Color(0xFF2F6FED);
       case UserRole.secretary:
@@ -41,17 +45,19 @@ abstract final class RoleVisuals {
   /// Short explanation of the approval tier for badges.
   static String tier(UserRole role) {
     switch (role) {
+      case UserRole.member:
+        return 'Member';
       case UserRole.businessManager:
       case UserRole.secretary:
         return 'Submitter';
       case UserRole.treasurer:
-        return 'Stage 1 · Verification';
+        return 'Stage 1 – Verification';
       case UserRole.auditor:
-        return 'Stage 2 · Audit';
+        return 'Stage 2 – Audit';
       case UserRole.president:
-        return 'Stage 3 · Endorsement';
+        return 'Stage 3 – Endorsement';
       case UserRole.adviser:
-        return 'Stage 4 · Final approval';
+        return 'Stage 4 – Final approval';
     }
   }
 }

@@ -42,8 +42,10 @@ class DatabaseHelper {
   DatabaseHelper({
     Database? database,
     Future<Directory> Function()? databaseDirectoryProvider,
+    bool? seedDemoData,
   })  : _db = database,
-        _directoryProvider = databaseDirectoryProvider;
+        _directoryProvider = databaseDirectoryProvider,
+        _seedDemoDataOverride = seedDemoData;
 
   static final DatabaseHelper instance = DatabaseHelper();
 
@@ -61,8 +63,37 @@ class DatabaseHelper {
     _settingsTable,
   ];
 
+  /// Required columns in `users` (v2 schema). Used to detect stale v1 files.
+  static const List<String> _requiredUserColumns = <String>[
+    'id',
+    'username',
+    'name',
+    'email',
+    'password',
+    'role',
+    'is_active',
+    'deactivated_at',
+    'term',
+    'must_change_password',
+  ];
+
+  /// Required columns in `events` (v3 schema). Older DBs are migrated additively.
+  static const List<String> _requiredEventColumns = <String>[
+    'id',
+    'title',
+    'starting_budget',
+    'event_type',
+    'school_year',
+    'is_archived',
+    'created_at',
+    'updated_at',
+  ];
+
   /// Optional directory override used by tests and previews.
   final Future<Directory> Function()? _directoryProvider;
+
+  /// When non-null, overrides [AppConstants.demoSeed] (useful for tests).
+  final bool? _seedDemoDataOverride;
 
   Database? _db;
   Future<Database>? _opening;
@@ -203,14 +234,25 @@ class DatabaseHelper {
       },
       onCreate: (Database db, int version) async {
         await _createSchema(db);
-        await _seedDemoData(db);
+        await _ensureBootstrapData(db);
       },
       onUpgrade: (Database db, int oldVersion, int newVersion) async {
-        // Version 1 is the initial schema. Future migrations belong here and
-        // must be additive so offline devices can upgrade without data loss.
+        // Migrations must be additive so offline devices keep their data.
         if (oldVersion < 1) {
           await _createSchema(db);
+          await _ensureBootstrapData(db);
+          return;
         }
+        if (oldVersion < 2) {
+          await _migrateV1ToV2(db);
+        }
+        if (oldVersion < 3) {
+          await _migrateV2ToV3(db);
+        }
+      },
+      onOpen: (Database db) async {
+        // Ensure a usable state even after a partial/legacy open.
+        await _ensureBootstrapData(db);
       },
     );
 
@@ -228,9 +270,8 @@ class DatabaseHelper {
     }
   }
 
-  /// Detects the "version matches but schema is incomplete" failure mode left
-  /// behind by an interrupted first run or an older build. Throwing here makes
-  /// the open routine delete and recreate the file.
+  /// Detects incomplete or unusable schemas. Throwing here makes the open
+  /// routine delete and recreate the file.
   Future<void> _verifySchema(Database db) async {
     final List<Map<String, Object?>> rows = await db.query(
       'sqlite_master',
@@ -250,18 +291,52 @@ class DatabaseHelper {
       );
     }
 
-    // A valid schema with no accounts can never reach the login screen, so it
-    // is treated as corrupt demo data and rebuilt.
-    final int userCount =
-        Sqflite.firstIntValue(
+    final Set<String> userColumns = await _columnNames(db, _usersTable);
+    final List<String> missingColumns = _requiredUserColumns
+        .where((String column) => !userColumns.contains(column))
+        .toList(growable: false);
+    if (missingColumns.isNotEmpty) {
+      throw DatabaseStartupException(
+        'The users table is missing columns (${missingColumns.join(', ')}).',
+      );
+    }
+
+    final Set<String> eventColumns = await _columnNames(db, _eventsTable);
+    final List<String> missingEventColumns = _requiredEventColumns
+        .where((String column) => !eventColumns.contains(column))
+        .toList(growable: false);
+    if (missingEventColumns.isNotEmpty) {
+      throw DatabaseStartupException(
+        'The events table is missing columns (${missingEventColumns.join(', ')}).',
+      );
+    }
+
+    // A ledger with no accounts cannot be used. When demo seeding is enabled
+    // this is treated as corrupt and rebuilt; when disabled it means the
+    // first-run bootstrap path must run.
+    final int userCount = Sqflite.firstIntValue(
           await db.rawQuery('SELECT COUNT(*) FROM $_usersTable'),
         ) ??
         0;
+    final bool demo = _seedDemoDataOverride ?? AppConstants.demoSeed;
+    if (userCount == 0 && !demo) {
+      // No seeded data expected; first-run bootstrap is allowed.
+      return;
+    }
     if (userCount == 0) {
       throw const DatabaseStartupException(
-        'The local ledger contains no officer accounts.',
+        'The local ledger contains no accounts.',
       );
     }
+  }
+
+  Future<Set<String>> _columnNames(Database db, String table) async {
+    final List<Map<String, Object?>> rows =
+        await db.rawQuery('PRAGMA table_info($table)');
+    return rows
+        .map((Map<String, Object?> row) => row['name']?.toString() ?? '')
+        .where((String name) => name.isNotEmpty)
+        .toSet();
   }
 
   /// Removes the database and SQLite sidecar files, ignoring individual errors
@@ -284,14 +359,23 @@ class DatabaseHelper {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Schema
+  // ---------------------------------------------------------------------------
+
   Future<void> _createSchema(Database db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS $_usersTable (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL COLLATE NOCASE UNIQUE,
         name TEXT NOT NULL,
-        email TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        email TEXT COLLATE NOCASE UNIQUE,
         password TEXT NOT NULL,
-        role TEXT NOT NULL
+        role TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        deactivated_at TEXT,
+        term TEXT NOT NULL DEFAULT '',
+        must_change_password INTEGER NOT NULL DEFAULT 0
       )
     ''');
 
@@ -299,7 +383,12 @@ class DatabaseHelper {
       CREATE TABLE IF NOT EXISTS $_eventsTable (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT NOT NULL,
-        starting_budget REAL NOT NULL DEFAULT 0
+        starting_budget REAL NOT NULL DEFAULT 0,
+        event_type TEXT NOT NULL DEFAULT 'General',
+        school_year TEXT NOT NULL DEFAULT '',
+        is_archived INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT
       )
     ''');
 
@@ -357,67 +446,283 @@ class DatabaseHelper {
       'CREATE INDEX IF NOT EXISTS idx_audit_timestamp '
       'ON $_auditLogsTable(timestamp)',
     );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_users_username '
+      'ON $_usersTable(username COLLATE NOCASE)',
+    );
+  }
+
+  /// Additive v1 -> v2 migration: username, optional email, active/term flags.
+  /// Existing rows, relations and passwords are preserved.
+  Future<void> _migrateV1ToV2(Database db) async {
+    final Set<String> columns = await _columnNames(db, _usersTable);
+
+    Future<void> addColumn(String column, String definition) async {
+      if (!columns.contains(column)) {
+        await db.execute(
+          'ALTER TABLE $_usersTable ADD COLUMN $column $definition',
+        );
+        columns.add(column);
+      }
+    }
+
+    await addColumn('username', 'TEXT');
+    // email was NOT NULL in v1; SQLite cannot drop NOT NULL in-place, but
+    // existing non-null values remain valid and new inserts may be null.
+    // We allow nulls at the application level; the column definition stays as-is
+    // for existing databases but we no longer require a value.
+    await addColumn('is_active', 'INTEGER NOT NULL DEFAULT 1');
+    await addColumn('deactivated_at', 'TEXT');
+    await addColumn('term', "TEXT NOT NULL DEFAULT ''");
+    await addColumn('must_change_password', 'INTEGER NOT NULL DEFAULT 0');
+
+    await _backfillUsernames(db);
+
+    await db.execute(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_unique '
+      'ON $_usersTable(username COLLATE NOCASE) '
+      "WHERE username IS NOT NULL AND TRIM(username) <> ''",
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_users_username '
+      'ON $_usersTable(username COLLATE NOCASE)',
+    );
+  }
+
+  /// Additive v2 -> v3 migration: budget event metadata and archiving.
+  Future<void> _migrateV2ToV3(Database db) async {
+    final Set<String> columns = await _columnNames(db, _eventsTable);
+
+    Future<void> addColumn(String column, String definition) async {
+      if (!columns.contains(column)) {
+        await db.execute(
+          'ALTER TABLE $_eventsTable ADD COLUMN $column $definition',
+        );
+        columns.add(column);
+      }
+    }
+
+    await addColumn('event_type', "TEXT NOT NULL DEFAULT 'General'");
+    await addColumn('school_year', "TEXT NOT NULL DEFAULT ''");
+    await addColumn('is_archived', 'INTEGER NOT NULL DEFAULT 0');
+    await addColumn('created_at', 'TEXT');
+    await addColumn('updated_at', 'TEXT');
+
+    final String now = DateTime.now().toIso8601String();
+    await db.rawUpdate(
+      'UPDATE $_eventsTable '
+      "SET event_type = CASE WHEN event_type IS NULL OR TRIM(event_type) = '' "
+      "THEN 'General' ELSE event_type END, "
+      "school_year = COALESCE(school_year, ''), "
+      'is_archived = COALESCE(is_archived, 0), '
+      'created_at = COALESCE(created_at, ?), '
+      'updated_at = COALESCE(updated_at, COALESCE(created_at, ?))',
+      <Object?>[now, now],
+    );
+  }
+
+  Future<void> _backfillUsernames(Database db) async {
+    final List<Map<String, Object?>> rows = await db.query(
+      _usersTable,
+      columns: <String>['id', 'username', 'email', 'name'],
+      orderBy: 'id ASC',
+    );
+    final Set<String> used = <String>{};
+
+    for (final Map<String, Object?> row in rows) {
+      final int id = (row['id'] as num?)?.toInt() ?? 0;
+      if (id <= 0) {
+        continue;
+      }
+      final String existing = row['username']?.toString().trim() ?? '';
+      if (existing.isNotEmpty) {
+        final String normalized = _normalizeUsername(existing);
+        final String uniqueExisting = _dedupeUsername(normalized, used, id);
+        if (uniqueExisting != normalized ||
+            uniqueExisting != existing ||
+            !used.contains(uniqueExisting)) {
+          await db.update(
+            _usersTable,
+            <String, Object?>{'username': uniqueExisting},
+            where: 'id = ?',
+            whereArgs: <Object?>[id],
+          );
+        }
+        used.add(uniqueExisting);
+        continue;
+      }
+
+      String base = _usernameBase(
+        email: row['email']?.toString(),
+        name: row['name']?.toString(),
+        id: id,
+      );
+      base = _normalizeUsername(base);
+      if (base.isEmpty) {
+        base = 'user$id';
+      }
+      final String username = _dedupeUsername(base, used, id);
+      used.add(username);
+      await db.update(
+        _usersTable,
+        <String, Object?>{'username': username},
+        where: 'id = ?',
+        whereArgs: <Object?>[id],
+      );
+    }
+  }
+
+  String _usernameBase({String? email, String? name, required int id}) {
+    final String emailRaw = (email ?? '').trim();
+    if (emailRaw.contains('@')) {
+      final String local = emailRaw.split('@').first;
+      final String cleaned = local.toLowerCase().replaceAll(
+            RegExp(r'[^a-z0-9._-]'),
+            '',
+          );
+      if (cleaned.isNotEmpty) {
+        return cleaned;
+      }
+    }
+    final String nameClean = (name ?? '').trim().toLowerCase().replaceAll(
+          RegExp(r'[^a-z0-9]+'),
+          '',
+        );
+    if (nameClean.length >= 3) {
+      return nameClean.length > 20 ? nameClean.substring(0, 20) : nameClean;
+    }
+    return 'user$id';
+  }
+
+  String _normalizeUsername(String value) {
+    String normalized = value.trim().toLowerCase().replaceAll(
+          RegExp(r'[^a-z0-9._-]'),
+          '',
+        );
+    normalized = normalized.replaceAll(RegExp(r'^[._-]+|[._-]+$'), '');
+    if (normalized.length < 3) {
+      normalized = normalized.padRight(3, '0');
+    }
+    if (normalized.length > 30) {
+      normalized = normalized.substring(0, 30);
+    }
+    return normalized;
+  }
+
+  String _dedupeUsername(String base, Set<String> used, int id) {
+    String candidate = base;
+    if (!used.contains(candidate)) {
+      return candidate;
+    }
+    candidate = _trimToLength('$base$id', 30);
+    if (!used.contains(candidate)) {
+      return candidate;
+    }
+    int suffix = 2;
+    while (true) {
+      final String withSuffix = _trimToLength('$base$suffix', 30);
+      if (!used.contains(withSuffix)) {
+        return withSuffix;
+      }
+      suffix++;
+    }
+  }
+
+  String _trimToLength(String value, int max) {
+    if (value.length <= max) {
+      return value;
+    }
+    return value.substring(0, max);
   }
 
   // ---------------------------------------------------------------------------
-  // Demo seeding
+  // Bootstrap data (demo-only) / first-run readiness
+  // ---------------------------------------------------------------------------
+
+  Future<void> _ensureBootstrapData(Database db) async {
+    final int userCount = Sqflite.firstIntValue(
+          await db.rawQuery('SELECT COUNT(*) FROM $_usersTable'),
+        ) ??
+        0;
+    final bool demo = _seedDemoDataOverride ?? AppConstants.demoSeed;
+
+    if (demo) {
+      if (userCount == 0) {
+        await _seedDemoData(db);
+      }
+      return;
+    }
+
+    // Production/default mode: start clean. A safe first-run bootstrap
+    // (creating the initial Adviser/manager) is handled by the app UI when
+    // no users exist. Keep the database schema ready with no accounts/events.
+  }
+
+  /// Whether the ledger has no user accounts yet (first-run state).
+  Future<bool> isFirstRun() async {
+    final Database db = await database;
+    final int count = Sqflite.firstIntValue(
+          await db.rawQuery('SELECT COUNT(*) FROM $_usersTable'),
+        ) ??
+        0;
+    return count == 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Demo seeding (enabled only when DEMO_SEED=true)
   // ---------------------------------------------------------------------------
 
   Future<void> _seedDemoData(Database db) async {
     final String passwordDigest = PasswordHasher.hash(AppConstants.demoPassword);
     final Map<String, int> userIds = <String, int>{};
 
-    Future<void> addUser(String name, String email, UserRole role) async {
+    Future<void> addUser(
+      String name,
+      String username,
+      String email,
+      UserRole role,
+    ) async {
       final int id = await db.insert(_usersTable, <String, Object?>{
+        'username': username,
         'name': name,
         'email': email,
         'password': passwordDigest,
         'role': role.storageValue,
+        'is_active': 1,
+        'term': '',
+        'must_change_password': 0,
       });
       userIds[role.storageValue] = id;
     }
 
-    await addUser(
-      'Bea Manalo',
-      'bm@orgledger.app',
-      UserRole.businessManager,
-    );
-    await addUser(
-      'Sam Rivera',
-      'secretary@orgledger.app',
-      UserRole.secretary,
-    );
-    await addUser(
-      'Tessa Cruz',
-      'treasurer@orgledger.app',
-      UserRole.treasurer,
-    );
-    await addUser(
-      'Audie Reyes',
-      'auditor@orgledger.app',
-      UserRole.auditor,
-    );
-    await addUser(
-      'Perry Santos',
-      'president@orgledger.app',
-      UserRole.president,
-    );
-    await addUser(
-      'Ada Villanueva',
-      'adviser@orgledger.app',
-      UserRole.adviser,
-    );
+    await addUser('Bea Manalo', 'bm', 'bm@orgledger.app', UserRole.businessManager);
+    await addUser('Sam Rivera', 'secretary', 'secretary@orgledger.app', UserRole.secretary);
+    await addUser('Tessa Cruz', 'treasurer', 'treasurer@orgledger.app', UserRole.treasurer);
+    await addUser('Audie Reyes', 'auditor', 'auditor@orgledger.app', UserRole.auditor);
+    await addUser('Perry Santos', 'president', 'president@orgledger.app', UserRole.president);
+    await addUser('Ada Villanueva', 'adviser', 'adviser@orgledger.app', UserRole.adviser);
 
     final int bmId = userIds[UserRole.businessManager.storageValue] ?? 0;
     final int secretaryId = userIds[UserRole.secretary.storageValue] ?? 0;
 
+    final String seedNow = DateTime.now().toIso8601String();
     final int intramuralsId = await db.insert(_eventsTable, <String, Object?>{
       'title': 'Intramurals 2026',
       'starting_budget': 60000.0,
+      'event_type': 'School Year',
+      'school_year': 'SY 2025-2026',
+      'is_archived': 0,
+      'created_at': seedNow,
+      'updated_at': seedNow,
     });
     final int summitId = await db.insert(_eventsTable, <String, Object?>{
       'title': 'Leadership Summit 2026',
       'starting_budget': 25000.0,
+      'event_type': 'Project',
+      'school_year': 'SY 2025-2026',
+      'is_archived': 0,
+      'created_at': seedNow,
+      'updated_at': seedNow,
     });
 
     final DateTime now = DateTime.now();
@@ -453,157 +758,33 @@ class DatabaseHelper {
     }
 
     // Approved history: ₱52,000 of the ₱60,000 budget, i.e. ~86.7% used.
-    await addExpense(
-      eventId: intramuralsId,
-      title: 'Catering balance for opening day',
-      amount: 12500,
-      category: AppCategories.food,
-      status: ExpenseStatus.adviserApproved,
-      submittedBy: bmId,
-      daysAgo: 18,
-    );
-    await addExpense(
-      eventId: intramuralsId,
-      title: 'Function hall reservation',
-      amount: 18000,
-      category: AppCategories.venues,
-      status: ExpenseStatus.adviserApproved,
-      submittedBy: secretaryId,
-      daysAgo: 15,
-    );
-    await addExpense(
-      eventId: intramuralsId,
-      title: 'Sports supplies and materials',
-      amount: 9800,
-      category: AppCategories.supplies,
-      status: ExpenseStatus.adviserApproved,
-      submittedBy: bmId,
-      daysAgo: 11,
-    );
-    await addExpense(
-      eventId: intramuralsId,
-      title: 'Shuttle service for participants',
-      amount: 7200,
-      category: AppCategories.transport,
-      status: ExpenseStatus.adviserApproved,
-      submittedBy: secretaryId,
-      daysAgo: 7,
-    );
-    await addExpense(
-      eventId: intramuralsId,
-      title: 'Tarpaulin and poster printing',
-      amount: 4500,
-      category: AppCategories.printing,
-      status: ExpenseStatus.adviserApproved,
-      submittedBy: bmId,
-      daysAgo: 3,
-    );
+    await addExpense(eventId: intramuralsId, title: 'Catering balance for opening day', amount: 12500, category: AppCategories.food, status: ExpenseStatus.adviserApproved, submittedBy: bmId, daysAgo: 18);
+    await addExpense(eventId: intramuralsId, title: 'Function hall reservation', amount: 18000, category: AppCategories.venues, status: ExpenseStatus.adviserApproved, submittedBy: secretaryId, daysAgo: 15);
+    await addExpense(eventId: intramuralsId, title: 'Sports supplies and materials', amount: 9800, category: AppCategories.supplies, status: ExpenseStatus.adviserApproved, submittedBy: bmId, daysAgo: 11);
+    await addExpense(eventId: intramuralsId, title: 'Shuttle service for participants', amount: 7200, category: AppCategories.transport, status: ExpenseStatus.adviserApproved, submittedBy: secretaryId, daysAgo: 7);
+    await addExpense(eventId: intramuralsId, title: 'Tarpaulin and poster printing', amount: 4500, category: AppCategories.printing, status: ExpenseStatus.adviserApproved, submittedBy: bmId, daysAgo: 3);
 
     // Live pipeline entries.
-    final int pendingFoodId = await addExpense(
-      eventId: intramuralsId,
-      title: 'Snacks for student volunteers',
-      amount: 2800,
-      category: AppCategories.food,
-      status: ExpenseStatus.pending,
-      submittedBy: bmId,
-      synced: 0,
-      daysAgo: 1,
-    );
-    final int pendingOthersId = await addExpense(
-      eventId: intramuralsId,
-      title: 'Printing of participant ID laces',
-      amount: 950,
-      category: AppCategories.others,
-      customCategory: 'ID Printing',
-      status: ExpenseStatus.pending,
-      submittedBy: secretaryId,
-      daysAgo: 0,
-    );
-    final int verifiedId = await addExpense(
-      eventId: intramuralsId,
-      title: 'Sound system rental',
-      amount: 6000,
-      category: AppCategories.venues,
-      status: ExpenseStatus.treasurerVerified,
-      submittedBy: bmId,
-      synced: 0,
-      daysAgo: 2,
-    );
-    final int checkedId = await addExpense(
-      eventId: intramuralsId,
-      title: 'Medals and trophies',
-      amount: 7500,
-      category: AppCategories.prizes,
-      status: ExpenseStatus.auditorChecked,
-      submittedBy: secretaryId,
-      daysAgo: 4,
-    );
-    final int endorsedId = await addExpense(
-      eventId: intramuralsId,
-      title: 'Emergency medical kits',
-      amount: 3200,
-      category: AppCategories.supplies,
-      status: ExpenseStatus.presidentEndorsed,
-      submittedBy: bmId,
-      daysAgo: 5,
-    );
-    final int rejectedId = await addExpense(
-      eventId: intramuralsId,
-      title: 'Personal cloud storage renewal',
-      amount: 1200,
-      category: AppCategories.miscellaneous,
-      status: ExpenseStatus.rejected,
-      submittedBy: secretaryId,
-      remarks:
-          'Receipt is a personal subscription and not an organization expense.',
-      daysAgo: 6,
-    );
-    final int flaggedId = await addExpense(
-      eventId: intramuralsId,
-      title: 'Emergency extension cords',
-      amount: 2400,
-      category: AppCategories.supplies,
-      status: ExpenseStatus.flagged,
-      submittedBy: bmId,
-      remarks:
-          'Amount on the receipt does not match the encoded amount. Please re-upload a clear official receipt.',
-      synced: 0,
-      daysAgo: 2,
-    );
+    await addExpense(eventId: intramuralsId, title: 'Snacks for student volunteers', amount: 2800, category: AppCategories.food, status: ExpenseStatus.pending, submittedBy: bmId, synced: 0, daysAgo: 1);
+    await addExpense(eventId: intramuralsId, title: 'Printing of participant ID laces', amount: 950, category: AppCategories.others, customCategory: 'ID Printing', status: ExpenseStatus.pending, submittedBy: secretaryId, daysAgo: 0);
+    await addExpense(eventId: intramuralsId, title: 'Sound system rental', amount: 6000, category: AppCategories.venues, status: ExpenseStatus.treasurerVerified, submittedBy: bmId, synced: 0, daysAgo: 2);
+    await addExpense(eventId: intramuralsId, title: 'Medals and trophies', amount: 7500, category: AppCategories.prizes, status: ExpenseStatus.auditorChecked, submittedBy: secretaryId, daysAgo: 4);
+    await addExpense(eventId: intramuralsId, title: 'Emergency medical kits', amount: 3200, category: AppCategories.supplies, status: ExpenseStatus.presidentEndorsed, submittedBy: bmId, daysAgo: 5);
+    await addExpense(eventId: intramuralsId, title: 'Personal cloud storage renewal', amount: 1200, category: AppCategories.miscellaneous, status: ExpenseStatus.rejected, submittedBy: secretaryId, remarks: 'Receipt is a personal subscription and not an organization expense.', daysAgo: 6);
+    await addExpense(eventId: intramuralsId, title: 'Emergency extension cords', amount: 2400, category: AppCategories.supplies, status: ExpenseStatus.flagged, submittedBy: bmId, remarks: 'Amount on the receipt does not match the encoded amount. Please re-upload a clear official receipt.', synced: 0, daysAgo: 2);
 
     // A second event proves the dashboard is scoped per event.
-    await addExpense(
-      eventId: summitId,
-      title: 'Speaker honorarium',
-      amount: 4000,
-      category: AppCategories.miscellaneous,
-      status: ExpenseStatus.adviserApproved,
-      submittedBy: bmId,
-      daysAgo: 9,
-    );
-    await addExpense(
-      eventId: summitId,
-      title: 'Workshop materials',
-      amount: 2500,
-      category: AppCategories.supplies,
-      status: ExpenseStatus.pending,
-      submittedBy: secretaryId,
-      daysAgo: 1,
-    );
+    await addExpense(eventId: summitId, title: 'Speaker honorarium', amount: 4000, category: AppCategories.miscellaneous, status: ExpenseStatus.adviserApproved, submittedBy: bmId, daysAgo: 9);
+    await addExpense(eventId: summitId, title: 'Workshop materials', amount: 2500, category: AppCategories.supplies, status: ExpenseStatus.pending, submittedBy: secretaryId, daysAgo: 1);
 
-    final String bmLabel = 'Bea Manalo · Business Manager';
-    final String secretaryLabel = 'Sam Rivera · Secretary';
-    final String treasurerLabel = 'Tessa Cruz · Treasurer';
-    final String auditorLabel = 'Audie Reyes · Auditor';
-    final String presidentLabel = 'Perry Santos · President';
-    final String adviserLabel = 'Ada Villanueva · Adviser';
+    const String bmLabel = 'Bea Manalo · Business Manager';
+    const String secretaryLabel = 'Sam Rivera · Secretary';
+    const String treasurerLabel = 'Tessa Cruz · Treasurer';
+    const String auditorLabel = 'Audie Reyes · Auditor';
+    const String presidentLabel = 'Perry Santos · President';
+    const String adviserLabel = 'Ada Villanueva · Adviser';
 
-    Future<void> audit(
-      String action,
-      String actor,
-      DateTime timestamp,
-    ) async {
+    Future<void> audit(String action, String actor, DateTime timestamp) async {
       await db.insert(_auditLogsTable, <String, Object?>{
         'action': action,
         'performed_by': actor,
@@ -611,169 +792,62 @@ class DatabaseHelper {
       });
     }
 
-    // Build a realistic timeline for the seeded pipeline.
     Future<void> pipelineHistory({
-      required int id,
       required String title,
       required int submittedBy,
       required String status,
       required DateTime submittedAt,
     }) async {
       final String submitter = submittedBy == bmId ? bmLabel : secretaryLabel;
-      await audit(
-        'Submitted "$title" for review',
-        submitter,
-        submittedAt,
-      );
+      await audit('Submitted "$title" for review', submitter, submittedAt);
       if (status == ExpenseStatus.rejected) {
-        await audit(
-          'Rejected "$title": receipt is not an organization expense',
-          treasurerLabel,
-          submittedAt.add(const Duration(hours: 4)),
-        );
+        await audit('Rejected "$title": receipt is not an organization expense', treasurerLabel, submittedAt.add(const Duration(hours: 4)));
         return;
       }
       if (status == ExpenseStatus.flagged) {
-        await audit(
-          'Flagged "$title" for receipt mismatch',
-          auditorLabel,
-          submittedAt.add(const Duration(hours: 5)),
-        );
+        await audit('Flagged "$title" for receipt mismatch', auditorLabel, submittedAt.add(const Duration(hours: 5)));
         return;
       }
       final int step = ExpenseStatus.step(status);
       if (step >= 2) {
-        await audit(
-          'Verified receipt and disbursement for "$title"',
-          treasurerLabel,
-          submittedAt.add(const Duration(hours: 6)),
-        );
+        await audit('Verified receipt and disbursement for "$title"', treasurerLabel, submittedAt.add(const Duration(hours: 6)));
       }
       if (step >= 3) {
-        await audit(
-          'Checked arithmetic for "$title"',
-          auditorLabel,
-          submittedAt.add(const Duration(hours: 12)),
-        );
+        await audit('Checked arithmetic for "$title"', auditorLabel, submittedAt.add(const Duration(hours: 12)));
       }
       if (step >= 4) {
-        await audit(
-          'Endorsed "$title" for final approval',
-          presidentLabel,
-          submittedAt.add(const Duration(hours: 18)),
-        );
+        await audit('Endorsed "$title" for final approval', presidentLabel, submittedAt.add(const Duration(hours: 18)));
       }
       if (step >= 5) {
-        await audit(
-          'Approved and locked "$title"',
-          adviserLabel,
-          submittedAt.add(const Duration(days: 1)),
-        );
+        await audit('Approved and locked "$title"', adviserLabel, submittedAt.add(const Duration(days: 1)));
       }
     }
 
-    final Map<int, ({String title, int submittedBy, String status, int daysAgo})>
-        pipeline = <int, ({String title, int submittedBy, String status, int daysAgo})>{
-      pendingFoodId: (
-        title: 'Snacks for student volunteers',
-        submittedBy: bmId,
-        status: ExpenseStatus.pending,
-        daysAgo: 1,
-      ),
-      pendingOthersId: (
-        title: 'Printing of participant ID laces',
-        submittedBy: secretaryId,
-        status: ExpenseStatus.pending,
-        daysAgo: 0,
-      ),
-      verifiedId: (
-        title: 'Sound system rental',
-        submittedBy: bmId,
-        status: ExpenseStatus.treasurerVerified,
-        daysAgo: 2,
-      ),
-      checkedId: (
-        title: 'Medals and trophies',
-        submittedBy: secretaryId,
-        status: ExpenseStatus.auditorChecked,
-        daysAgo: 4,
-      ),
-      endorsedId: (
-        title: 'Emergency medical kits',
-        submittedBy: bmId,
-        status: ExpenseStatus.presidentEndorsed,
-        daysAgo: 5,
-      ),
-      rejectedId: (
-        title: 'Personal cloud storage renewal',
-        submittedBy: secretaryId,
-        status: ExpenseStatus.rejected,
-        daysAgo: 6,
-      ),
-      flaggedId: (
-        title: 'Emergency extension cords',
-        submittedBy: bmId,
-        status: ExpenseStatus.flagged,
-        daysAgo: 2,
-      ),
-    };
-
-    for (final MapEntry<int, ({String title, int submittedBy, String status, int daysAgo})>
-        entry in pipeline.entries) {
-      final ({String title, int submittedBy, String status, int daysAgo}) data =
-          entry.value;
-      await pipelineHistory(
-        id: entry.key,
-        title: data.title,
-        submittedBy: data.submittedBy,
-        status: data.status,
-        submittedAt: now.subtract(Duration(days: data.daysAgo)),
-      );
+    final List<({String title, int submittedBy, String status, int daysAgo})> pipeline =
+        <({String title, int submittedBy, String status, int daysAgo})>[
+      (title: 'Snacks for student volunteers', submittedBy: bmId, status: ExpenseStatus.pending, daysAgo: 1),
+      (title: 'Printing of participant ID laces', submittedBy: secretaryId, status: ExpenseStatus.pending, daysAgo: 0),
+      (title: 'Sound system rental', submittedBy: bmId, status: ExpenseStatus.treasurerVerified, daysAgo: 2),
+      (title: 'Medals and trophies', submittedBy: secretaryId, status: ExpenseStatus.auditorChecked, daysAgo: 4),
+      (title: 'Emergency medical kits', submittedBy: bmId, status: ExpenseStatus.presidentEndorsed, daysAgo: 5),
+      (title: 'Personal cloud storage renewal', submittedBy: secretaryId, status: ExpenseStatus.rejected, daysAgo: 6),
+      (title: 'Emergency extension cords', submittedBy: bmId, status: ExpenseStatus.flagged, daysAgo: 2),
+    ];
+    for (final ({String title, int submittedBy, String status, int daysAgo}) data in pipeline) {
+      await pipelineHistory(title: data.title, submittedBy: data.submittedBy, status: data.status, submittedAt: now.subtract(Duration(days: data.daysAgo)));
     }
 
-    // Full history for approved items so the audit screen is populated.
-    for (final ({String title, int submittedBy, int daysAgo}) item
-        in <({String title, int submittedBy, int daysAgo})>[
-      (
-        title: 'Catering balance for opening day',
-        submittedBy: bmId,
-        daysAgo: 18,
-      ),
-      (
-        title: 'Function hall reservation',
-        submittedBy: secretaryId,
-        daysAgo: 15,
-      ),
-      (
-        title: 'Sports supplies and materials',
-        submittedBy: bmId,
-        daysAgo: 11,
-      ),
-      (
-        title: 'Shuttle service for participants',
-        submittedBy: secretaryId,
-        daysAgo: 7,
-      ),
-      (
-        title: 'Tarpaulin and poster printing',
-        submittedBy: bmId,
-        daysAgo: 3,
-      ),
+    for (final ({String title, int submittedBy, int daysAgo}) item in <({String title, int submittedBy, int daysAgo})>[
+      (title: 'Catering balance for opening day', submittedBy: bmId, daysAgo: 18),
+      (title: 'Function hall reservation', submittedBy: secretaryId, daysAgo: 15),
+      (title: 'Sports supplies and materials', submittedBy: bmId, daysAgo: 11),
+      (title: 'Shuttle service for participants', submittedBy: secretaryId, daysAgo: 7),
+      (title: 'Tarpaulin and poster printing', submittedBy: bmId, daysAgo: 3),
     ]) {
-      await pipelineHistory(
-        id: 0,
-        title: item.title,
-        submittedBy: item.submittedBy,
-        status: ExpenseStatus.adviserApproved,
-        submittedAt: now.subtract(Duration(days: item.daysAgo)),
-      );
+      await pipelineHistory(title: item.title, submittedBy: item.submittedBy, status: ExpenseStatus.adviserApproved, submittedAt: now.subtract(Duration(days: item.daysAgo)));
     }
 
-    await audit(
-      'Initialized OrgLedger with demo accounts and sample liquidation data',
-      'System',
-      now.subtract(const Duration(minutes: 5)),
-    );
+    await audit('Initialized OrgLedger with demo accounts and sample liquidation data', 'System', now.subtract(const Duration(minutes: 5)));
   }
 
   // ---------------------------------------------------------------------------

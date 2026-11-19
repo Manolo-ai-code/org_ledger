@@ -5,9 +5,8 @@ plugins {
 }
 
 android {
-    namespace = "com.example.org_ledger"
+    namespace = "com.orgledger.app"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -15,8 +14,7 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.org_ledger"
+        applicationId = "com.orgledger.app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -31,8 +29,9 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // Debug-signed for simple GitHub (sideload) distribution.
+            // For consistent updates across machines, replace with a release keystore
+            // (configure android/key.properties; do not commit secrets).
             signingConfig = signingConfigs.getByName("debug")
         }
     }

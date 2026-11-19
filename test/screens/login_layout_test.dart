@@ -18,7 +18,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final DatabaseHelper db = DatabaseHelper();
+    final DatabaseHelper db = DatabaseHelper(seedDemoData: false);
     final AuditRepository audit = AuditRepository(db);
 
     await tester.pumpWidget(
@@ -42,9 +42,9 @@ void main() {
       ),
     );
 
-    expect(find.text('Officer sign in'), findsOneWidget);
+    expect(find.text('Sign in'), findsOneWidget);
     expect(find.text('Sign in securely'), findsOneWidget);
-    expect(find.text('Business Manager'), findsOneWidget);
+    expect(find.text('Username'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

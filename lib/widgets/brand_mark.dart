@@ -11,6 +11,8 @@ class BrandMark extends StatelessWidget {
     this.centered = false,
   });
 
+  static const String _logoAsset = 'assets/branding/logo.png';
+
   final double size;
   final bool showWordmark;
   final bool centered;
@@ -22,11 +24,6 @@ class BrandMark extends StatelessWidget {
       width: size,
       height: size,
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: <Color>[Color(0xFF11866F), Color(0xFF075E4E)],
-        ),
         borderRadius: BorderRadius.circular(size * 0.3),
         boxShadow: <BoxShadow>[
           BoxShadow(
@@ -36,10 +33,26 @@ class BrandMark extends StatelessWidget {
           ),
         ],
       ),
-      child: Icon(
-        Icons.account_balance_wallet_rounded,
-        color: Colors.white,
-        size: size * 0.48,
+      clipBehavior: Clip.antiAlias,
+      child: Image.asset(
+        _logoAsset,
+        fit: BoxFit.cover,
+        errorBuilder: (BuildContext context, Object error, StackTrace? stackTrace) {
+          return Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: <Color>[Color(0xFF11866F), Color(0xFF075E4E)],
+              ),
+            ),
+            child: Icon(
+              Icons.account_balance_wallet_rounded,
+              color: Colors.white,
+              size: size * 0.48,
+            ),
+          );
+        },
       ),
     );
 

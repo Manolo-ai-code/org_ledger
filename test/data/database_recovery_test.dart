@@ -35,6 +35,7 @@ void main() {
 
   Future<DatabaseHelper> helperFor(Directory directory) async => DatabaseHelper(
         databaseDirectoryProvider: () async => directory,
+        seedDemoData: true,
       );
 
   int countValue(List<Map<String, Object?>> rows) {
@@ -130,6 +131,7 @@ void main() {
         }
         return databaseDirectory;
       },
+      seedDemoData: true,
     );
     addTearDown(helper.close);
 

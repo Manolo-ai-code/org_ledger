@@ -2,17 +2,15 @@ import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme/app_colors.dart';
-import '../../core/theme/role_visuals.dart';
 import '../../core/utils/validators.dart';
-import '../../data/models/user_role.dart';
 import '../../providers/user_role_provider.dart';
 import '../../widgets/banners.dart';
 
-/// New officer registration.
+/// Member self-registration.
 ///
-/// Registration never auto-signs-in; the user is returned to the login screen
-/// with their email prefilled. Role selection is open in this demo build and
-/// should be invitation-gated in a real deployment.
+/// Open registration always creates an active Member account (no role picker).
+/// Registration never auto-signs-in; the user returns to login with username
+/// prefilled.
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
 
@@ -23,11 +21,11 @@ class RegisterScreen extends StatefulWidget {
 class _RegisterScreenState extends State<RegisterScreen> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _confirmController = TextEditingController();
 
-  UserRole _role = UserRole.businessManager;
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
   String? _error;
@@ -35,6 +33,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   @override
   void dispose() {
     _nameController.dispose();
+    _usernameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     _confirmController.dispose();
@@ -54,16 +53,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
     setState(() => _error = null);
     final AuthResult result = await session.registerAccount(
       name: _nameController.text,
+      username: _usernameController.text,
       email: _emailController.text,
       password: _passwordController.text,
-      role: _role,
     );
     if (!mounted) {
       return;
     }
     if (result.success) {
       Navigator.of(context).pop(
-        result.user?.email ?? _emailController.text.trim(),
+        result.user?.username ?? _usernameController.text.trim().toLowerCase(),
       );
     } else {
       setState(() => _error = result.message);
@@ -75,7 +74,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final ThemeData theme = Theme.of(context);
     final UserRoleProvider session = context.watch<UserRoleProvider>();
     final bool busy = session.isBusy;
-    final Color roleColor = RoleVisuals.color(_role);
 
     return Scaffold(
       appBar: AppBar(
@@ -104,17 +102,18 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         ),
                       ),
                       child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: <Widget>[
                           Container(
                             width: 44,
                             height: 44,
                             decoration: BoxDecoration(
-                              color: roleColor.withValues(alpha: 0.13),
+                              color: AppColors.emerald.withValues(alpha: 0.13),
                               borderRadius: BorderRadius.circular(12),
                             ),
-                            child: Icon(
-                              RoleVisuals.icon(_role),
-                              color: roleColor,
+                            child: const Icon(
+                              Icons.person_add_alt_1_rounded,
+                              color: AppColors.emerald,
                             ),
                           ),
                           const SizedBox(width: 12),
@@ -123,12 +122,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: <Widget>[
                                 Text(
-                                  'Registering as ${_role.label}',
+                                  'Member account',
                                   style: theme.textTheme.titleSmall,
                                 ),
                                 const SizedBox(height: 2),
                                 Text(
-                                  _role.responsibility,
+                                  'Create your account to sign in and submit expense requests. '
+                                  'Officer roles are assigned by the organization adviser.',
                                   style: theme.textTheme.bodySmall?.copyWith(
                                     color:
                                         theme.colorScheme.onSurfaceVariant,
@@ -155,7 +155,26 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       decoration: const InputDecoration(
                         labelText: 'Full name',
                         hintText: 'Juan Dela Cruz',
-                        prefixIcon: Icon(Icons.person_outline_rounded),
+                        prefixIcon: Icon(Icons.badge_outlined),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _usernameController,
+                      textInputAction: TextInputAction.next,
+                      autocorrect: false,
+                      autofillHints: const <String>[AutofillHints.newUsername],
+                      validator: Validators.username,
+                      onChanged: (_) {
+                        if (_error != null) {
+                          setState(() => _error = null);
+                        }
+                      },
+                      decoration: const InputDecoration(
+                        labelText: 'Username',
+                        hintText: 'e.g. juan.delacruz',
+                        helperText: 'Use 3-30 letters, numbers, dot, _ or -',
+                        prefixIcon: Icon(Icons.alternate_email_rounded),
                       ),
                     ),
                     const SizedBox(height: 12),
@@ -165,56 +184,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       textInputAction: TextInputAction.next,
                       autocorrect: false,
                       autofillHints: const <String>[AutofillHints.email],
-                      validator: Validators.email,
+                      validator: Validators.optionalEmail,
                       onChanged: (_) {
                         if (_error != null) {
                           setState(() => _error = null);
                         }
                       },
                       decoration: const InputDecoration(
-                        labelText: 'Organization email',
-                        hintText: 'officer@orgledger.app',
-                        prefixIcon: Icon(Icons.alternate_email_rounded),
+                        labelText: 'Contact email (optional)',
+                        hintText: 'name@example.com',
+                        prefixIcon: Icon(Icons.mail_outline_rounded),
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<UserRole>(
-                      initialValue: _role,
-                      isExpanded: true,
-                      decoration: const InputDecoration(
-                        labelText: 'Officer role',
-                        prefixIcon: Icon(Icons.badge_outlined),
-                      ),
-                      items: UserRole.values
-                          .map(
-                            (UserRole role) => DropdownMenuItem<UserRole>(
-                              value: role,
-                              child: Row(
-                                children: <Widget>[
-                                  Icon(
-                                    RoleVisuals.icon(role),
-                                    size: 18,
-                                    color: RoleVisuals.color(role),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Text(
-                                      role.label,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          )
-                          .toList(growable: false),
-                      onChanged: busy
-                          ? null
-                          : (UserRole? role) {
-                              if (role != null) {
-                                setState(() => _role = role);
-                              }
-                            },
                     ),
                     const SizedBox(height: 12),
                     TextFormField(
@@ -297,12 +277,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                 color: Colors.white,
                               ),
                             )
-                          : const Text('Create officer account'),
+                          : const Text('Create account'),
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      'Demo note: role selection is open for evaluation. In production, '
-                      'officer accounts should be created through an adviser invitation.',
+                      'Your account will be created as a Member. You can submit and view your own expense requests.',
                       textAlign: TextAlign.center,
                       style: theme.textTheme.labelSmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,

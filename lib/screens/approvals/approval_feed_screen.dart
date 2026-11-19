@@ -152,7 +152,7 @@ class _ApprovalFeedScreenState extends State<ApprovalFeedScreen> {
                   icon: Icons.verified_user_outlined,
                   title: 'Reviewer access only',
                   message:
-                      'Approval queues are bound to Treasurer, Auditor, President and Adviser accounts.',
+                      'Approval queues are bound to Treasurer → Auditor → President and Adviser accounts.',
                 ),
               )
             else if (ledger.isLoading && ledger.expenses.isEmpty)
@@ -174,7 +174,7 @@ class _ApprovalFeedScreenState extends State<ApprovalFeedScreen> {
                           : 'Nothing in review',
                   message: _filter == _FeedFilter.myQueue
                       ? 'New items will appear here when the previous reviewer forwards them to your tier.'
-                      : 'Try another filter or pull down to refresh the ledger.',
+                      : 'Try another filter or pull down to refresh the ledger…',
                   actionLabel: 'Refresh',
                   onAction: ledger.refresh,
                 ),

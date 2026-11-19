@@ -1,47 +1,47 @@
 import '../../data/models/user_role.dart';
 
-/// Convenience demo credentials shown on the login screen.
+/// Convenience demo credentials shown on the login screen (demo builds only).
 class DemoAccount {
   const DemoAccount({
     required this.role,
     required this.name,
-    required this.email,
+    required this.username,
   });
 
   final UserRole role;
   final String name;
-  final String email;
+  final String username;
 }
 
 const List<DemoAccount> demoAccounts = <DemoAccount>[
   DemoAccount(
     role: UserRole.businessManager,
     name: 'Bea Manalo',
-    email: 'bm@orgledger.app',
+    username: 'bm',
   ),
   DemoAccount(
     role: UserRole.secretary,
     name: 'Sam Rivera',
-    email: 'secretary@orgledger.app',
+    username: 'secretary',
   ),
   DemoAccount(
     role: UserRole.treasurer,
     name: 'Tessa Cruz',
-    email: 'treasurer@orgledger.app',
+    username: 'treasurer',
   ),
   DemoAccount(
     role: UserRole.auditor,
     name: 'Audie Reyes',
-    email: 'auditor@orgledger.app',
+    username: 'auditor',
   ),
   DemoAccount(
     role: UserRole.president,
     name: 'Perry Santos',
-    email: 'president@orgledger.app',
+    username: 'president',
   ),
   DemoAccount(
     role: UserRole.adviser,
     name: 'Ada Villanueva',
-    email: 'adviser@orgledger.app',
+    username: 'adviser',
   ),
 ];

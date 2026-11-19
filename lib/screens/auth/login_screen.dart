@@ -14,8 +14,8 @@ import 'register_screen.dart';
 
 /// Credential sign-in screen.
 ///
-/// Role permissions are bound to the authenticated account only; there is no
-/// role switcher anywhere in the app shell.
+/// Username is the primary sign-in identifier; email is accepted for backward
+/// compatibility. Role permissions are bound to the authenticated account only.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -25,7 +25,7 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
-  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _identifierController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final FocusNode _passwordFocus = FocusNode();
 
@@ -34,7 +34,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   void dispose() {
-    _emailController.dispose();
+    _identifierController.dispose();
     _passwordController.dispose();
     _passwordFocus.dispose();
     super.dispose();
@@ -52,7 +52,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     setState(() => _error = null);
     final AuthResult result = await session.login(
-      email: _emailController.text,
+      identifier: _identifierController.text,
       password: _passwordController.text,
     );
     if (!mounted) {
@@ -66,22 +66,22 @@ class _LoginScreenState extends State<LoginScreen> {
 
   void _fillDemo(DemoAccount account) {
     _formKey.currentState?.reset();
-    _emailController.text = account.email;
+    _identifierController.text = account.username;
     _passwordController.text = AppConstants.demoPassword;
     setState(() => _error = null);
   }
 
   Future<void> _openRegister() async {
-    final String? email = await Navigator.of(context).push<String>(
+    final String? username = await Navigator.of(context).push<String>(
       MaterialPageRoute<String>(
         builder: (BuildContext context) => const RegisterScreen(),
       ),
     );
-    if (!mounted || email == null || email.trim().isEmpty) {
+    if (!mounted || username == null || username.trim().isEmpty) {
       return;
     }
     setState(() {
-      _emailController.text = email.trim();
+      _identifierController.text = username.trim();
       _passwordController.clear();
       _error = null;
     });
@@ -153,12 +153,12 @@ class _LoginScreenState extends State<LoginScreen> {
                                             CrossAxisAlignment.stretch,
                                         children: <Widget>[
                                           Text(
-                                            'Officer sign in',
+                                            'Sign in',
                                             style: theme.textTheme.headlineSmall,
                                           ),
                                           const SizedBox(height: 4),
                                           Text(
-                                            'Use your organization account to continue.',
+                                            'Use your username to continue. Email also works if previously set.',
                                             style: theme.textTheme.bodySmall
                                                 ?.copyWith(
                                               color: theme
@@ -167,26 +167,25 @@ class _LoginScreenState extends State<LoginScreen> {
                                           ),
                                           const SizedBox(height: 20),
                                           TextFormField(
-                                            controller: _emailController,
+                                            controller: _identifierController,
                                             keyboardType:
-                                                TextInputType.emailAddress,
+                                                TextInputType.text,
                                             textInputAction: TextInputAction.next,
                                             autofillHints: const <String>[
                                               AutofillHints.username,
-                                              AutofillHints.email,
                                             ],
                                             autocorrect: false,
-                                            validator: Validators.email,
+                                            validator: Validators.loginIdentifier,
                                             onChanged: (_) {
                                               if (_error != null) {
                                                 setState(() => _error = null);
                                               }
                                             },
                                             decoration: const InputDecoration(
-                                              labelText: 'Email address',
-                                              hintText: 'officer@orgledger.app',
+                                              labelText: 'Username',
+                                              hintText: 'e.g. juan.delacruz',
                                               prefixIcon: Icon(
-                                                Icons.alternate_email_rounded,
+                                                Icons.person_outline_rounded,
                                               ),
                                             ),
                                           ),
@@ -263,7 +262,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                                 WrapCrossAlignment.center,
                                             children: <Widget>[
                                               Text(
-                                                'New officer?',
+                                                'New here?',
                                                 style: theme.textTheme.bodySmall
                                                     ?.copyWith(
                                                   color: theme.colorScheme
@@ -279,62 +278,63 @@ class _LoginScreenState extends State<LoginScreen> {
                                               ),
                                             ],
                                           ),
-                                          const Divider(height: 24),
-                                          Row(
-                                            children: <Widget>[
-                                              Icon(
-                                                Icons.bolt_rounded,
-                                                size: 16,
-                                                color: AppColors.emerald,
-                                              ),
-                                              const SizedBox(width: 5),
-                                              Expanded(
-                                                child: Text(
-                                                  'Quick-fill demo accounts '
-                                                  '(password123)',
-                                                  style: theme
-                                                      .textTheme.labelSmall
-                                                      ?.copyWith(
-                                                    color: theme.colorScheme
-                                                        .onSurfaceVariant,
-                                                    fontWeight: FontWeight.w600,
+                                          if (AppConstants.demoSeed) ...<Widget>[
+                                            const Divider(height: 24),
+                                            Row(
+                                              children: <Widget>[
+                                                Icon(
+                                                  Icons.bolt_rounded,
+                                                  size: 16,
+                                                  color: AppColors.emerald,
+                                                ),
+                                                const SizedBox(width: 5),
+                                                Expanded(
+                                                  child: Text(
+                                                    'Quick-fill demo accounts',
+                                                    style: theme
+                                                        .textTheme.labelSmall
+                                                        ?.copyWith(
+                                                      color: theme.colorScheme
+                                                          .onSurfaceVariant,
+                                                      fontWeight: FontWeight.w600,
+                                                    ),
                                                   ),
                                                 ),
-                                              ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 8),
-                                          Wrap(
-                                            spacing: 6,
-                                            runSpacing: 6,
-                                            children: demoAccounts
-                                                .map(
-                                                  (DemoAccount account) =>
-                                                      ActionChip(
-                                                    avatar: Icon(
-                                                      RoleVisuals.icon(
-                                                        account.role,
+                                              ],
+                                            ),
+                                            const SizedBox(height: 8),
+                                            Wrap(
+                                              spacing: 6,
+                                              runSpacing: 6,
+                                              children: demoAccounts
+                                                  .map(
+                                                    (DemoAccount account) =>
+                                                        ActionChip(
+                                                      avatar: Icon(
+                                                        RoleVisuals.icon(
+                                                          account.role,
+                                                        ),
+                                                        size: 15,
+                                                        color: RoleVisuals.color(
+                                                          account.role,
+                                                        ),
                                                       ),
-                                                      size: 15,
-                                                      color: RoleVisuals.color(
-                                                        account.role,
+                                                      label: Text(
+                                                        account.role.label,
+                                                        style: theme
+                                                            .textTheme.labelSmall,
                                                       ),
+                                                      tooltip:
+                                                          '${account.name} · @${account.username}',
+                                                      onPressed: busy
+                                                          ? null
+                                                          : () =>
+                                                              _fillDemo(account),
                                                     ),
-                                                    label: Text(
-                                                      account.role.label,
-                                                      style: theme
-                                                          .textTheme.labelSmall,
-                                                    ),
-                                                    tooltip:
-                                                        '${account.name} · ${account.email}',
-                                                    onPressed: busy
-                                                        ? null
-                                                        : () =>
-                                                            _fillDemo(account),
-                                                  ),
-                                                )
-                                                .toList(growable: false),
-                                          ),
+                                                  )
+                                                  .toList(growable: false),
+                                            ),
+                                          ],
                                         ],
                                       ),
                                     ),
@@ -352,7 +352,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                     const SizedBox(width: 5),
                                     Flexible(
                                       child: Text(
-                                        'Works offline · Receipts stay on this device',
+                                        'Works offline · receipts stay on this device',
                                         textAlign: TextAlign.center,
                                         style: theme.textTheme.labelSmall
                                             ?.copyWith(

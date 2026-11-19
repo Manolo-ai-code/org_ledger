@@ -10,6 +10,7 @@ import '../audit/audit_log_screen.dart';
 import '../dashboard/dashboard_screen.dart';
 import '../expenses/add_expense_screen.dart';
 import '../expenses/expenses_screen.dart';
+import '../members/members_screen.dart';
 import '../profile/profile_screen.dart';
 
 /// Authenticated application shell.
@@ -50,18 +51,29 @@ class _HomeShellState extends State<HomeShell> {
         ),
       );
     }
-    tabs
-      ..add(
+    if (role.canManageMembers) {
+      tabs.add(
         const _ShellTab(
-          label: 'Expenses',
-          icon: Icons.receipt_long_outlined,
-          selectedIcon: Icons.receipt_long_rounded,
-          screen: ExpensesScreen(),
+          label: 'Members',
+          icon: Icons.groups_outlined,
+          selectedIcon: Icons.groups_rounded,
+          screen: MembersScreen(),
           isAudit: false,
-          showsFab: true,
         ),
-      )
-      ..add(
+      );
+    }
+    tabs.add(
+      const _ShellTab(
+        label: 'Expenses',
+        icon: Icons.receipt_long_outlined,
+        selectedIcon: Icons.receipt_long_rounded,
+        screen: ExpensesScreen(),
+        isAudit: false,
+        showsFab: true,
+      ),
+    );
+    if (role.isOfficer) {
+      tabs.add(
         const _ShellTab(
           label: 'Audit',
           icon: Icons.history_rounded,
@@ -69,16 +81,17 @@ class _HomeShellState extends State<HomeShell> {
           screen: AuditLogScreen(),
           isAudit: true,
         ),
-      )
-      ..add(
-        const _ShellTab(
-          label: 'Profile',
-          icon: Icons.person_outline_rounded,
-          selectedIcon: Icons.person_rounded,
-          screen: ProfileScreen(),
-          isAudit: false,
-        ),
       );
+    }
+    tabs.add(
+      const _ShellTab(
+        label: 'Profile',
+        icon: Icons.person_outline_rounded,
+        selectedIcon: Icons.person_rounded,
+        screen: ProfileScreen(),
+        isAudit: false,
+      ),
+    );
     return tabs;
   }
 
@@ -98,7 +111,7 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     final UserRoleProvider session = context.watch<UserRoleProvider>();
     final LedgerProvider ledger = context.watch<LedgerProvider>();
-    final UserRole role = session.role ?? UserRole.secretary;
+    final UserRole role = session.role ?? UserRole.member;
     final List<_ShellTab> tabs = _tabsFor(role);
     final int index = _index.clamp(0, tabs.length - 1).toInt();
     final bool showFab = session.canSubmitExpenses && tabs[index].showsFab;

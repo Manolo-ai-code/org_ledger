@@ -337,8 +337,10 @@ class LiquidationPdfService {
                   ink,
                 ),
                 summaryTile(
-                  'Remaining balance',
-                  'PHP ${_money.format(remaining)}',
+                  remaining < 0 ? 'Overspent amount' : 'Remaining balance',
+                  remaining < 0
+                      ? 'PHP ${_money.format(remaining.abs())}'
+                      : 'PHP ${_money.format(remaining)}',
                   remaining < 0 ? danger : emerald,
                 ),
                 summaryTile(
@@ -476,7 +478,7 @@ class LiquidationPdfService {
               children: <pw.Widget>[
                 pw.Expanded(child: signatureBlock('Auditor', '')),
                 pw.SizedBox(width: 24),
-                pw.Expanded(child: signatureBlock('President / Adviser', '')),
+                pw.Expanded(child: signatureBlock('President → Adviser', '')),
               ],
             ),
           ];

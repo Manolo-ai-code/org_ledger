@@ -1,4 +1,4 @@
-package com.example.org_ledger
+package com.orgledger.app
 
 import io.flutter.embedding.android.FlutterActivity
 

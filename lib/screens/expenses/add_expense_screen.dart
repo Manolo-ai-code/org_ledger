@@ -302,14 +302,13 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                     const Icon(Icons.lock_outline_rounded, size: 42),
                     const SizedBox(height: 12),
                     Text(
-                      'Submission is limited to submitters',
+                      'Submission not available',
                       style: theme.textTheme.titleMedium,
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      'Only Business Manager and Secretary accounts can add expenses. '
-                      'Reviewers act on items in the Approvals tab.',
+                      'Your account does not have permission to submit expenses right now.',
                       textAlign: TextAlign.center,
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
@@ -372,6 +371,7 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                                       decimal: true,
                                     ),
                                     textInputAction: TextInputAction.next,
+                                    onChanged: (_) => setState(() {}),
                                     inputFormatters: <TextInputFormatter>[
                                       FilteringTextInputFormatter.allow(
                                         RegExp(r'[0-9.]'),
@@ -637,7 +637,9 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                                       children: <Widget>[
                                         Expanded(
                                           child: Text(
-                                            'Remaining (approved only)',
+                                            ledger.isOverBudget
+                                                ? 'Current overspend (approved)'
+                                                : 'Remaining (approved only)',
                                             style: theme.textTheme.labelSmall
                                                 ?.copyWith(
                                               color: theme.colorScheme
@@ -646,9 +648,13 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                                           ),
                                         ),
                                         Text(
-                                          AppFormat.currency(
-                                            ledger.remainingBudget,
-                                          ),
+                                          ledger.isOverBudget
+                                              ? AppFormat.currency(
+                                                  ledger.overspentAmount,
+                                                )
+                                              : AppFormat.currency(
+                                                  ledger.remainingBudget,
+                                                ),
                                           style: theme.textTheme.labelSmall
                                               ?.copyWith(
                                             fontWeight: FontWeight.w700,
@@ -658,6 +664,133 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
                                           ),
                                         ),
                                       ],
+                                    ),
+                                    Builder(
+                                      builder: (BuildContext context) {
+                                        final double entered =
+                                            Validators.parseAmount(
+                                          _amountController.text,
+                                        );
+                                        final bool hasBudget =
+                                            ledger.totalBudget > 0;
+                                        if (!hasBudget) {
+                                          return const SizedBox.shrink();
+                                        }
+                                        if (ledger.isOverBudget) {
+                                          final String extra = entered > 0
+                                              ? ' If fully approved later, this ₱${_amountController.text.trim().isEmpty ? '0.00' : _amountController.text.trim()} request would add to approved spend; it does not affect the official budget unless approved.'
+                                              : ' You may still submit expenses for review, but they will not affect official spend unless fully approved.';
+                                          return Container(
+                                            margin:
+                                                const EdgeInsets.only(top: 10),
+                                            padding: const EdgeInsets.all(10),
+                                            decoration: BoxDecoration(
+                                              color: theme.colorScheme.error
+                                                  .withValues(alpha: 0.08),
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                              border: Border.all(
+                                                color: theme.colorScheme.error
+                                                    .withValues(alpha: 0.22),
+                                              ),
+                                            ),
+                                            child: Row(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: <Widget>[
+                                                Icon(
+                                                  Icons.warning_rounded,
+                                                  size: 17,
+                                                  color:
+                                                      theme.colorScheme.error,
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Expanded(
+                                                  child: Text(
+                                                    'This event is already over budget by ${AppFormat.currency(ledger.overspentAmount)} based on approved expenses.$extra',
+                                                    style: theme
+                                                        .textTheme.labelSmall
+                                                        ?.copyWith(
+                                                      color: theme.colorScheme
+                                                          .onSurface,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                        }
+                                        if (entered <= 0) {
+                                          return const SizedBox.shrink();
+                                        }
+                                        final double projectedApproved =
+                                            ledger.totalSpent + entered;
+                                        final bool exceeds = projectedApproved >
+                                            ledger.totalBudget;
+                                        if (!exceeds) {
+                                          final double projectedLeft =
+                                              ledger.totalBudget -
+                                                  projectedApproved;
+                                          return Padding(
+                                            padding:
+                                                const EdgeInsets.only(top: 8),
+                                            child: Text(
+                                              'If fully approved, about ${AppFormat.currency(projectedLeft)} would remain (based on approved expenses only).',
+                                              style: theme
+                                                  .textTheme.labelSmall
+                                                  ?.copyWith(
+                                                color: theme.colorScheme
+                                                    .onSurfaceVariant,
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                        final double overBy =
+                                            projectedApproved -
+                                                ledger.totalBudget;
+                                        final Color warn = AppColors.budget(
+                                          projectedApproved /
+                                              ledger.totalBudget,
+                                        );
+                                        return Container(
+                                          margin:
+                                              const EdgeInsets.only(top: 10),
+                                          padding: const EdgeInsets.all(10),
+                                          decoration: BoxDecoration(
+                                            color: warn.withValues(alpha: 0.08),
+                                            borderRadius:
+                                                BorderRadius.circular(10),
+                                            border: Border.all(
+                                              color:
+                                                  warn.withValues(alpha: 0.22),
+                                            ),
+                                          ),
+                                          child: Row(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: <Widget>[
+                                              Icon(
+                                                Icons.warning_amber_rounded,
+                                                size: 17,
+                                                color: warn,
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: Text(
+                                                  'If fully approved, this would exceed the remaining approved budget by ${AppFormat.currency(overBy)}. '
+                                                  'You may still submit it for review; official spend changes only after full approval.',
+                                                  style: theme
+                                                      .textTheme.labelSmall
+                                                      ?.copyWith(
+                                                    color: theme.colorScheme
+                                                        .onSurface,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        );
+                                      },
                                     ),
                                   ],
                                 ],

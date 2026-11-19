@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:org_ledger/core/constants/app_categories.dart';
 import 'package:org_ledger/core/constants/app_constants.dart';
@@ -16,6 +18,7 @@ import 'package:org_ledger/data/services/connectivity_service.dart';
 import 'package:org_ledger/data/services/liquidation_pdf_service.dart';
 import 'package:org_ledger/data/services/sync_service.dart';
 import 'package:org_ledger/providers/ledger_provider.dart';
+import 'package:org_ledger/providers/user_role_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -26,13 +29,12 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  late Directory tempRoot;
+  late Directory databaseDirectory;
   late DatabaseHelper db;
   late AuthRepository auth;
   late ExpenseRepository expenses;
   late AuditRepository audit;
-
-  Future<String> databasePath() async =>
-      p.join(await getDatabasesPath(), AppConstants.databaseName);
 
   setUpAll(() {
     sqfliteFfiInit();
@@ -40,8 +42,13 @@ void main() {
   });
 
   setUp(() async {
-    await deleteDatabase(await databasePath());
-    db = DatabaseHelper();
+    tempRoot = await Directory.systemTemp.createTemp('org_ledger_db_test_');
+    databaseDirectory = Directory(p.join(tempRoot.path, 'databases'));
+    await databaseDirectory.create(recursive: true);
+    db = DatabaseHelper(
+      seedDemoData: true,
+      databaseDirectoryProvider: () async => databaseDirectory,
+    );
     auth = AuthRepository(db);
     expenses = ExpenseRepository(db);
     audit = AuditRepository(db);
@@ -50,9 +57,9 @@ void main() {
   tearDown(() async {
     await db.close();
     try {
-      await deleteDatabase(await databasePath());
-    } on DatabaseException {
-      // A locked file on Windows is harmless; the next setUp deletes it.
+      await tempRoot.delete(recursive: true);
+    } catch (_) {
+      // A locked file on Windows is harmless; each test uses a fresh temp dir.
     }
   });
 
@@ -61,12 +68,18 @@ void main() {
     expect(users, hasLength(6));
     expect(
       users.map((AppUser user) => user.role).toSet(),
-      UserRole.values.toSet(),
+      UserRole.values.where((UserRole r) => r.isOfficer).toSet(),
+    );
+    expect(
+      users.every((AppUser user) => user.username.isNotEmpty && user.isActive),
+      isTrue,
     );
     // Plain text is never persisted, even for seeded demo accounts.
     expect(
       users.every(
-        (AppUser user) => user.password == PasswordHasher.hash(AppConstants.demoPassword),
+        (AppUser user) =>
+            user.password ==
+            PasswordHasher.hash(AppConstants.demoPassword),
       ),
       isTrue,
     );
@@ -119,19 +132,27 @@ void main() {
 
   test('authenticates seeded roles and rejects bad credentials', () async {
     final AppUser adviser = await auth.authenticate(
-      email: 'ADVISER@orgledger.app',
+      identifier: 'adviser',
       password: AppConstants.demoPassword,
     );
     expect(adviser.role, UserRole.adviser);
     expect(adviser.name, 'Ada Villanueva');
+    expect(adviser.isActive, isTrue);
+
+    // Email login remains supported for backward compatibility.
+    final AppUser byEmail = await auth.authenticate(
+      identifier: 'ADVISER@orgledger.app',
+      password: AppConstants.demoPassword,
+    );
+    expect(byEmail.id, adviser.id);
 
     await expectLater(
-      auth.authenticate(email: 'adviser@orgledger.app', password: 'nope'),
+      auth.authenticate(identifier: 'adviser', password: 'nope'),
       throwsA(isA<AuthException>()),
     );
     await expectLater(
       auth.authenticate(
-        email: 'ghost@orgledger.app',
+        identifier: 'ghost',
         password: AppConstants.demoPassword,
       ),
       throwsA(isA<AuthException>()),
@@ -141,29 +162,32 @@ void main() {
   test('registration hashes passwords and refuses duplicates', () async {
     final AppUser created = await auth.register(
       name: 'Nina Flores',
+      username: 'nina',
       email: 'Nina@OrgLedger.app',
       password: 'supersecret1',
-      role: UserRole.secretary,
     );
 
     expect(created.id, greaterThan(0));
+    expect(created.username, 'nina');
     expect(created.email, 'nina@orgledger.app');
+    expect(created.role, UserRole.member);
+    expect(created.isActive, isTrue);
     expect(created.password, isNot('supersecret1'));
     expect(created.password, PasswordHasher.hash('supersecret1'));
 
     final AppUser signedIn = await auth.authenticate(
-      email: 'nina@orgledger.app',
+      identifier: 'nina',
       password: 'supersecret1',
     );
     expect(signedIn.name, 'Nina Flores');
-    expect(signedIn.role, UserRole.secretary);
+    expect(signedIn.role, UserRole.member);
 
     await expectLater(
       auth.register(
         name: 'Duplicate Account',
-        email: 'nina@orgledger.app',
+        username: 'nina',
+        email: 'other@orgledger.app',
         password: 'supersecret1',
-        role: UserRole.secretary,
       ),
       throwsA(isA<AuthException>()),
     );
@@ -172,7 +196,7 @@ void main() {
   test('stores expenses and advances their workflow status', () async {
     final OrgEvent event = (await expenses.getEvents()).first;
     final AppUser submitter = await auth.authenticate(
-      email: 'bm@orgledger.app',
+      identifier: 'bm',
       password: AppConstants.demoPassword,
     );
 
@@ -252,6 +276,104 @@ void main() {
     expect(logs.first.action, 'Approved expense');
     expect(logs.first.performedBy, 'Tessa Cruz · Treasurer');
     expect(await audit.count(), greaterThanOrEqualTo(2));
+  });
+
+  test('production first-run bootstrap creates initial adviser and default event',
+      () async {
+    await db.close();
+    try {
+      await tempRoot.delete(recursive: true);
+    } catch (_) {
+      // Best effort cleanup before switching to a fresh production-mode DB.
+    }
+    tempRoot = await Directory.systemTemp.createTemp('org_ledger_db_test_');
+    databaseDirectory = Directory(p.join(tempRoot.path, 'databases'));
+    await databaseDirectory.create(recursive: true);
+
+    final DatabaseHelper prodDb = DatabaseHelper(
+      seedDemoData: false,
+      databaseDirectoryProvider: () async => databaseDirectory,
+    );
+    addTearDown(() async {
+      await prodDb.close();
+    });
+
+    expect(await prodDb.isFirstRun(), isTrue);
+
+    final AuthRepository prodAuth = AuthRepository(prodDb);
+    final UserRoleProvider session = UserRoleProvider(
+      authRepository: prodAuth,
+      auditRepository: AuditRepository(prodDb),
+      databaseHelper: prodDb,
+    );
+    addTearDown(session.dispose);
+
+    await session.restoreSession();
+    expect(session.needsBootstrap, isTrue);
+    expect(session.isAuthenticated, isFalse);
+
+    final AuthResult result = await session.bootstrapInitialAdviser(
+      name: 'Ada Villanueva',
+      username: 'adviser',
+      email: 'adviser@orgledger.app',
+      password: 'supersecret1',
+    );
+    expect(result.success, isTrue, reason: result.message);
+    expect(session.isAuthenticated, isTrue);
+    expect(session.needsBootstrap, isFalse);
+    expect(session.currentUser?.role, UserRole.adviser);
+    expect(session.currentUser?.username, 'adviser');
+    expect(session.currentUser?.isActive, isTrue);
+
+    final List<OrgEvent> events = await ExpenseRepository(prodDb).getEvents();
+    expect(events, hasLength(1));
+    expect(events.single.title, 'Organization Fund');
+
+    expect(await prodDb.isFirstRun(), isFalse);
+
+    final AuthResult second = await session.bootstrapInitialAdviser(
+      name: 'Another Adviser',
+      username: 'another',
+      password: 'supersecret1',
+    );
+    expect(second.success, isFalse);
+    expect(second.message, contains('already complete'));
+
+    final Database raw = await prodDb.database;
+    final List<Map<String, Object?>> sessionRows = await raw.query(
+      'app_settings',
+      columns: <String>['value'],
+      where: 'key = ?',
+      whereArgs: <Object?>['session_user_id'],
+      limit: 1,
+    );
+    final String? storedSession =
+        sessionRows.isEmpty ? null : sessionRows.single['value']?.toString();
+    expect(storedSession, session.currentUser?.id.toString());
+  });
+
+  test('restoreSession rethrows database startup failures for bootstrap retry',
+      () async {
+    final DatabaseHelper brokenDb = DatabaseHelper(
+      seedDemoData: false,
+      databaseDirectoryProvider: () async {
+        throw const FileSystemException('No storage available');
+      },
+    );
+    addTearDown(brokenDb.close);
+
+    final UserRoleProvider session = UserRoleProvider(
+      authRepository: AuthRepository(brokenDb),
+      auditRepository: AuditRepository(brokenDb),
+      databaseHelper: brokenDb,
+    );
+    addTearDown(session.dispose);
+
+    await expectLater(
+      session.restoreSession(),
+      throwsA(isA<DatabaseStartupException>()),
+    );
+    expect(session.isRestoring, isFalse);
   });
 
   test('provider scopes queues and advances the full approval chain', () async {

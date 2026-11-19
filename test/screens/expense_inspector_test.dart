@@ -109,10 +109,12 @@ void main() {
         ? null
         : AppUser(
             id: 9,
+            username: 'treasurer',
             name: 'Tessa Cruz',
             email: 'treasurer@orgledger.app',
             password: 'hash',
             role: role,
+            isActive: true,
           );
 
     await tester.pumpWidget(

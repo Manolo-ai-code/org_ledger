@@ -3,8 +3,10 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 
 import '../core/constants/app_categories.dart';
+import '../core/constants/app_constants.dart';
 import '../core/constants/expense_status.dart';
 import '../core/utils/app_format.dart';
+import '../data/database/database_helper.dart';
 import '../data/models/app_user.dart';
 import '../data/models/expense.dart';
 import '../data/models/org_event.dart';
@@ -58,17 +60,20 @@ class LedgerProvider extends ChangeNotifier {
     required SyncService syncService,
     required ConnectivityService connectivityService,
     required LiquidationPdfService pdfService,
+    DatabaseHelper? databaseHelper,
   })  : _expensesRepo = expenseRepository,
         _auditRepo = auditRepository,
         _sync = syncService,
         _connectivity = connectivityService,
-        _pdf = pdfService;
+        _pdf = pdfService,
+        _db = databaseHelper;
 
   final ExpenseRepository _expensesRepo;
   final AuditRepository _auditRepo;
   final SyncService _sync;
   final ConnectivityService _connectivity;
   final LiquidationPdfService _pdf;
+  final DatabaseHelper? _db;
 
   List<OrgEvent> _events = <OrgEvent>[];
   OrgEvent? _selectedEvent;
@@ -95,8 +100,32 @@ class LedgerProvider extends ChangeNotifier {
   DateTime? get lastSyncAt => _lastSyncAt;
   String? get error => _error;
 
+  AppUser? _viewer;
+
+  /// Sets the current viewer for role/member-scoped visibility.
+  /// Members only see expenses they submitted; officers/reviewers see all.
+  void setViewer(AppUser? user) {
+    _viewer = user;
+  }
+
+  List<Expense> _scopeForViewer(List<Expense> expenses) {
+    final AppUser? viewer = _viewer;
+    if (viewer == null) {
+      return expenses;
+    }
+    if (viewer.role == UserRole.member) {
+      return expenses
+          .where((Expense expense) => expense.submittedBy == viewer.id)
+          .toList(growable: false);
+    }
+    return expenses;
+  }
+
   /// Loads events, the selected event and its expenses once per session.
-  Future<void> initialize() async {
+  Future<void> initialize({AppUser? viewer}) async {
+    if (viewer != null || _viewer == null) {
+      _viewer = viewer;
+    }
     if (_initialized) {
       await refresh();
       return;
@@ -141,10 +170,13 @@ class LedgerProvider extends ChangeNotifier {
       _connectivitySub = null;
       _online = true;
     }
-    _notify();
   }
 
   Future<void> loadEvents() async {
+    await _loadEventsInternal();
+  }
+
+  Future<void> _loadEventsInternal({int? preferredEventId}) async {
     final int token = ++_loadToken;
     _loading = true;
     _error = null;
@@ -152,12 +184,15 @@ class LedgerProvider extends ChangeNotifier {
 
     try {
       final List<OrgEvent> events = await _expensesRepo.getEvents();
-      final int? previousId = _selectedEvent?.id;
+      final int? persistedId = preferredEventId ?? await _readSelectedEventId();
+      final int? desiredId = preferredEventId ?? _selectedEvent?.id ?? persistedId;
       OrgEvent? selected;
-      for (final OrgEvent event in events) {
-        if (event.id == previousId) {
-          selected = event;
-          break;
+      if (desiredId != null) {
+        for (final OrgEvent event in events) {
+          if (event.id == desiredId) {
+            selected = event;
+            break;
+          }
         }
       }
       selected ??= events.isNotEmpty ? events.first : null;
@@ -171,8 +206,11 @@ class LedgerProvider extends ChangeNotifier {
       }
       _events = events;
       _selectedEvent = selected;
-      _expenses = expenses;
+      _expenses = _scopeForViewer(expenses);
       _pendingSyncCount = pending;
+      if (selected != null) {
+        await _persistSelectedEventId(selected.id);
+      }
     } catch (_) {
       if (token == _loadToken) {
         _error =
@@ -187,7 +225,7 @@ class LedgerProvider extends ChangeNotifier {
   }
 
   /// Pull-to-refresh entry point.
-  Future<void> refresh() => loadEvents();
+  Future<void> refresh() => _loadEventsInternal();
 
   Future<void> selectEvent(OrgEvent event) async {
     if (_selectedEvent?.id == event.id) {
@@ -200,6 +238,7 @@ class LedgerProvider extends ChangeNotifier {
     _notify();
 
     try {
+      await _persistSelectedEventId(event.id);
       final List<Expense> expenses = await _expensesRepo.getExpenses(
         eventId: event.id,
       );
@@ -207,7 +246,7 @@ class LedgerProvider extends ChangeNotifier {
       if (token != _loadToken) {
         return;
       }
-      _expenses = expenses;
+      _expenses = _scopeForViewer(expenses);
       _pendingSyncCount = pending;
     } catch (_) {
       if (token == _loadToken) {
@@ -218,6 +257,206 @@ class LedgerProvider extends ChangeNotifier {
         _loading = false;
         _notify();
       }
+    }
+  }
+
+  Future<int?> _readSelectedEventId() async {
+    final DatabaseHelper? db = _db;
+    if (db == null) {
+      return null;
+    }
+    try {
+      final String? stored =
+          await db.getSetting(AppConstants.settingSelectedEventId);
+      final int id = int.tryParse(stored?.trim() ?? '') ?? 0;
+      return id > 0 ? id : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _persistSelectedEventId(int eventId) async {
+    final DatabaseHelper? db = _db;
+    if (db == null || eventId <= 0) {
+      return;
+    }
+    try {
+      await db.setSetting(
+        AppConstants.settingSelectedEventId,
+        eventId.toString(),
+      );
+    } catch (_) {
+      // Best effort: selection still works in-memory for this session.
+    }
+  }
+
+  /// Returns active and archived events for management views.
+  Future<List<OrgEvent>> fetchAllEventsForManagement() async {
+    try {
+      return await _expensesRepo.getEvents(includeArchived: true);
+    } catch (_) {
+      return List<OrgEvent>.from(_events);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Budget event management (Adviser/manager only; audited)
+  // ---------------------------------------------------------------------------
+
+  Future<LedgerActionResult> createBudgetEvent({
+    required AppUser actor,
+    required String title,
+    required double startingBudget,
+    String eventType = 'General',
+    String schoolYear = '',
+  }) async {
+    if (!actor.isActive || !actor.role.canManageMembers) {
+      return const LedgerActionResult(
+        success: false,
+        message: 'Only the Adviser can manage budget events.',
+      );
+    }
+    final String cleanTitle = title.trim();
+    final double budget = AppFormat.safeNumber(startingBudget);
+    if (cleanTitle.length < 3) {
+      return const LedgerActionResult(
+        success: false,
+        message: 'Enter an event name with at least 3 characters.',
+      );
+    }
+    if (budget < 0 || !budget.isFinite) {
+      return const LedgerActionResult(
+        success: false,
+        message: 'Enter a valid starting budget (zero or greater).',
+      );
+    }
+    try {
+      final int id = await _expensesRepo.createEvent(
+        title: cleanTitle,
+        startingBudget: budget,
+        eventType: eventType.trim().isEmpty ? 'General' : eventType.trim(),
+        schoolYear: schoolYear.trim(),
+      );
+      await _tryAudit(
+        'Created budget event "$cleanTitle" (${AppFormat.currency(budget)})',
+        '${actor.name} · ${actor.role.label}',
+      );
+      await _loadEventsInternal(preferredEventId: id);
+      return LedgerActionResult(
+        success: true,
+        message: 'Budget event "$cleanTitle" created.',
+        expenseId: id,
+      );
+    } catch (_) {
+      return const LedgerActionResult(
+        success: false,
+        message: 'The budget event could not be created. Please try again.',
+      );
+    }
+  }
+
+  Future<LedgerActionResult> updateBudgetEvent({
+    required AppUser actor,
+    required OrgEvent event,
+    required String title,
+    required double startingBudget,
+    String? eventType,
+    String? schoolYear,
+  }) async {
+    if (!actor.isActive || !actor.role.canManageMembers) {
+      return const LedgerActionResult(
+        success: false,
+        message: 'Only the Adviser can manage budget events.',
+      );
+    }
+    final String cleanTitle = title.trim();
+    final double budget = AppFormat.safeNumber(startingBudget);
+    if (cleanTitle.length < 3) {
+      return const LedgerActionResult(
+        success: false,
+        message: 'Enter an event name with at least 3 characters.',
+      );
+    }
+    if (budget < 0 || !budget.isFinite) {
+      return const LedgerActionResult(
+        success: false,
+        message: 'Enter a valid starting budget (zero or greater).',
+      );
+    }
+    try {
+      final int updated = await _expensesRepo.updateEvent(
+        eventId: event.id,
+        title: cleanTitle,
+        startingBudget: budget,
+        eventType: eventType,
+        schoolYear: schoolYear,
+      );
+      if (updated == 0) {
+        return const LedgerActionResult(
+          success: false,
+          message: 'The selected budget event could not be found.',
+        );
+      }
+      await _tryAudit(
+        'Updated budget event "${event.title}" → "$cleanTitle" (${AppFormat.currency(budget)})',
+        '${actor.name} · ${actor.role.label}',
+      );
+      await _loadEventsInternal(preferredEventId: event.id);
+      return LedgerActionResult(
+        success: true,
+        message: 'Budget event updated.',
+      );
+    } catch (_) {
+      return const LedgerActionResult(
+        success: false,
+        message: 'The budget event could not be updated. Please try again.',
+      );
+    }
+  }
+
+  Future<LedgerActionResult> setBudgetEventArchived({
+    required AppUser actor,
+    required OrgEvent event,
+    required bool archived,
+  }) async {
+    if (!actor.isActive || !actor.role.canManageMembers) {
+      return const LedgerActionResult(
+        success: false,
+        message: 'Only the Adviser can manage budget events.',
+      );
+    }
+    try {
+      final int updated = await _expensesRepo.setEventArchived(
+        eventId: event.id,
+        archived: archived,
+      );
+      if (updated == 0) {
+        return const LedgerActionResult(
+          success: false,
+          message: 'This budget event could not be updated.',
+        );
+      }
+      await _tryAudit(
+        archived
+            ? 'Archived budget event "${event.title}"'
+            : 'Restored budget event "${event.title}"',
+        '${actor.name} · ${actor.role.label}',
+      );
+      await _loadEventsInternal(
+        preferredEventId:
+            _selectedEvent?.id == event.id ? null : _selectedEvent?.id,
+      );
+      return LedgerActionResult(
+        success: true,
+        message: archived
+            ? '"${event.title}" archived. Past records remain available.'
+            : '"${event.title}" restored.',
+      );
+    } catch (_) {
+      return const LedgerActionResult(
+        success: false,
+        message: 'The budget event could not be updated. Please try again.',
+      );
     }
   }
 
@@ -261,6 +500,23 @@ class LedgerProvider extends ChangeNotifier {
   bool get isOverBudget => totalSpent > totalBudget && totalBudget > 0;
 
   bool get isNearBudgetLimit => budgetUsageRaw >= 0.8;
+
+  /// Amount spent beyond the starting budget (approved only). Zero when within budget.
+  double get overspentAmount {
+    if (totalBudget <= 0) return 0;
+    final double over = totalSpent - totalBudget;
+    return over > 0 ? over : 0;
+  }
+
+  /// Remaining budget after adding [amount] to current approved spend.
+  /// Uses approved-only spend as baseline (in-flight items do not affect budget).
+  double projectedRemaining(double amount) =>
+      totalBudget - (totalSpent + AppFormat.safeNumber(amount));
+
+  bool wouldExceedBudget(double amount) {
+    if (totalBudget <= 0) return false;
+    return AppFormat.safeNumber(amount) > (remainingBudget);
+  }
 
   /// Every item still moving through the pipeline.
   int get pendingApprovalsCount =>
@@ -379,10 +635,10 @@ class LedgerProvider extends ChangeNotifier {
     String receiptImagePath = '',
   }) async {
     if (!user.role.canSubmitExpenses) {
-      return LedgerActionResult(
+      return const LedgerActionResult(
         success: false,
         message:
-            '${user.role.label} accounts cannot submit expenses. Ask the Business Manager or Secretary.',
+            'Your account cannot submit expenses. Contact your adviser if you need access.',
       );
     }
 
@@ -502,8 +758,8 @@ class LedgerProvider extends ChangeNotifier {
           );
         }
         targetStatus = next;
-        auditAction = 'Approved "${expense.title}" · '
-            '${ExpenseStatus.label(next)}';
+        auditAction =
+            'Approved "${expense.title}" → ${ExpenseStatus.label(next)}';
         break;
       case ReviewAction.reject:
         if (cleanRemarks.length < 5) {
@@ -664,6 +920,7 @@ class LedgerProvider extends ChangeNotifier {
     _events = <OrgEvent>[];
     _selectedEvent = null;
     _expenses = <Expense>[];
+    _viewer = null;
     _loading = false;
     _syncing = false;
     _online = true;
@@ -685,7 +942,10 @@ class LedgerProvider extends ChangeNotifier {
     final OrgEvent? event = _selectedEvent;
     try {
       if (event != null) {
-        _expenses = await _expensesRepo.getExpenses(eventId: event.id);
+        final List<Expense> expenses = await _expensesRepo.getExpenses(
+          eventId: event.id,
+        );
+        _expenses = _scopeForViewer(expenses);
       }
       _pendingSyncCount = await _expensesRepo.pendingSyncCount();
     } catch (_) {
