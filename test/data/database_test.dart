@@ -1,0 +1,379 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:org_ledger/core/constants/app_categories.dart';
+import 'package:org_ledger/core/constants/app_constants.dart';
+import 'package:org_ledger/core/constants/expense_status.dart';
+import 'package:org_ledger/core/utils/password_hasher.dart';
+import 'package:org_ledger/data/database/database_helper.dart';
+import 'package:org_ledger/data/models/app_user.dart';
+import 'package:org_ledger/data/models/audit_log.dart';
+import 'package:org_ledger/data/models/expense.dart';
+import 'package:org_ledger/data/models/org_event.dart';
+import 'package:org_ledger/data/models/user_role.dart';
+import 'package:org_ledger/data/repositories/audit_repository.dart';
+import 'package:org_ledger/data/repositories/auth_repository.dart';
+import 'package:org_ledger/data/repositories/expense_repository.dart';
+import 'package:org_ledger/data/services/connectivity_service.dart';
+import 'package:org_ledger/data/services/liquidation_pdf_service.dart';
+import 'package:org_ledger/data/services/sync_service.dart';
+import 'package:org_ledger/providers/ledger_provider.dart';
+import 'package:path/path.dart' as p;
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+/// Integration tests for the SQLite schema, seeder and repositories.
+///
+/// These run on the Dart VM using `sqflite_common_ffi`, so the real schema,
+/// seed data, password hashing and joins are exercised without a device.
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  late DatabaseHelper db;
+  late AuthRepository auth;
+  late ExpenseRepository expenses;
+  late AuditRepository audit;
+
+  Future<String> databasePath() async =>
+      p.join(await getDatabasesPath(), AppConstants.databaseName);
+
+  setUpAll(() {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  });
+
+  setUp(() async {
+    await deleteDatabase(await databasePath());
+    db = DatabaseHelper();
+    auth = AuthRepository(db);
+    expenses = ExpenseRepository(db);
+    audit = AuditRepository(db);
+  });
+
+  tearDown(() async {
+    await db.close();
+    try {
+      await deleteDatabase(await databasePath());
+    } on DatabaseException {
+      // A locked file on Windows is harmless; the next setUp deletes it.
+    }
+  });
+
+  test('seeds six officers, two events and approved spending', () async {
+    final List<AppUser> users = await auth.getUsers();
+    expect(users, hasLength(6));
+    expect(
+      users.map((AppUser user) => user.role).toSet(),
+      UserRole.values.toSet(),
+    );
+    // Plain text is never persisted, even for seeded demo accounts.
+    expect(
+      users.every(
+        (AppUser user) => user.password == PasswordHasher.hash(AppConstants.demoPassword),
+      ),
+      isTrue,
+    );
+    expect(
+      users.any((AppUser user) => user.password == AppConstants.demoPassword),
+      isFalse,
+    );
+
+    final List<OrgEvent> events = await expenses.getEvents();
+    expect(events, hasLength(2));
+    final OrgEvent intramurals = events.firstWhere(
+      (OrgEvent event) => event.title == 'Intramurals 2026',
+    );
+    expect(intramurals.startingBudget, 60000);
+
+    final List<Expense> approved = await expenses.getApprovedExpenses(
+      intramurals.id,
+    );
+    expect(approved, isNotEmpty);
+    final double spent = approved.fold<double>(
+      0,
+      (double sum, Expense expense) => sum + expense.amount,
+    );
+    expect(spent, 52000);
+    expect(approved.every((Expense e) => e.submittedByName.isNotEmpty), isTrue);
+    expect(
+      approved.every((Expense e) => e.eventTitle == 'Intramurals 2026'),
+      isTrue,
+    );
+
+    // Every workflow state is represented in the demo data.
+    final List<Expense> all = await expenses.getExpenses();
+    expect(
+      all.map((Expense expense) => expense.status).toSet(),
+      containsAll(<String>[
+        ExpenseStatus.pending,
+        ExpenseStatus.treasurerVerified,
+        ExpenseStatus.auditorChecked,
+        ExpenseStatus.presidentEndorsed,
+        ExpenseStatus.adviserApproved,
+        ExpenseStatus.rejected,
+        ExpenseStatus.flagged,
+      ]),
+    );
+    expect(
+      all.where((Expense expense) => !expense.isSynced).length,
+      greaterThanOrEqualTo(3),
+    );
+  });
+
+  test('authenticates seeded roles and rejects bad credentials', () async {
+    final AppUser adviser = await auth.authenticate(
+      email: 'ADVISER@orgledger.app',
+      password: AppConstants.demoPassword,
+    );
+    expect(adviser.role, UserRole.adviser);
+    expect(adviser.name, 'Ada Villanueva');
+
+    await expectLater(
+      auth.authenticate(email: 'adviser@orgledger.app', password: 'nope'),
+      throwsA(isA<AuthException>()),
+    );
+    await expectLater(
+      auth.authenticate(
+        email: 'ghost@orgledger.app',
+        password: AppConstants.demoPassword,
+      ),
+      throwsA(isA<AuthException>()),
+    );
+  });
+
+  test('registration hashes passwords and refuses duplicates', () async {
+    final AppUser created = await auth.register(
+      name: 'Nina Flores',
+      email: 'Nina@OrgLedger.app',
+      password: 'supersecret1',
+      role: UserRole.secretary,
+    );
+
+    expect(created.id, greaterThan(0));
+    expect(created.email, 'nina@orgledger.app');
+    expect(created.password, isNot('supersecret1'));
+    expect(created.password, PasswordHasher.hash('supersecret1'));
+
+    final AppUser signedIn = await auth.authenticate(
+      email: 'nina@orgledger.app',
+      password: 'supersecret1',
+    );
+    expect(signedIn.name, 'Nina Flores');
+    expect(signedIn.role, UserRole.secretary);
+
+    await expectLater(
+      auth.register(
+        name: 'Duplicate Account',
+        email: 'nina@orgledger.app',
+        password: 'supersecret1',
+        role: UserRole.secretary,
+      ),
+      throwsA(isA<AuthException>()),
+    );
+  });
+
+  test('stores expenses and advances their workflow status', () async {
+    final OrgEvent event = (await expenses.getEvents()).first;
+    final AppUser submitter = await auth.authenticate(
+      email: 'bm@orgledger.app',
+      password: AppConstants.demoPassword,
+    );
+
+    final DateTime now = DateTime.now();
+    final Expense draft = Expense(
+      id: 0,
+      eventId: event.id,
+      title: 'Test banner printing',
+      amount: 750.5,
+      category: AppCategories.printing,
+      customCategory: '',
+      receiptImagePath: '',
+      status: ExpenseStatus.pending,
+      submittedBy: submitter.id,
+      remarks: '',
+      isSynced: false,
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    final int id = await expenses.insertExpense(draft);
+    expect(id, greaterThan(0));
+
+    final Expense? stored = await expenses.getExpense(id);
+    expect(stored, isNotNull);
+    expect(stored!.amount, 750.5);
+    expect(stored.status, ExpenseStatus.pending);
+    expect(stored.submittedByName, submitter.name);
+    expect(stored.eventTitle, event.title);
+
+    final int pendingBefore = await expenses.pendingSyncCount();
+    expect(pendingBefore, greaterThanOrEqualTo(1));
+
+    await expenses.updateStatus(
+      expenseId: id,
+      status: ExpenseStatus.treasurerVerified,
+      remarks: 'Receipt checked',
+      isSynced: true,
+    );
+
+    final Expense? updated = await expenses.getExpense(id);
+    expect(updated!.status, ExpenseStatus.treasurerVerified);
+    expect(updated.remarks, 'Receipt checked');
+    expect(updated.isSynced, isTrue);
+    expect(await expenses.pendingSyncCount(), pendingBefore - 1);
+
+    // Invalid ids are handled without throwing.
+    expect(await expenses.getExpense(0), isNull);
+    expect(await expenses.getExpense(999999), isNull);
+  });
+
+  test('persists session and theme settings', () async {
+    expect(await db.getSetting('session_user_id'), isNull);
+
+    await db.setSetting('session_user_id', '3');
+    await db.setSetting('theme_mode', 'dark');
+    expect(await db.getSetting('session_user_id'), '3');
+    expect(await db.getSetting('theme_mode'), 'dark');
+
+    await db.removeSetting('session_user_id');
+    expect(await db.getSetting('session_user_id'), isNull);
+    expect(await db.getSetting('theme_mode'), 'dark');
+  });
+
+  test('writes audit entries newest first', () async {
+    await audit.log(
+      action: 'Signed in',
+      performedBy: 'Tessa Cruz · Treasurer',
+    );
+    await audit.log(
+      action: 'Approved expense',
+      performedBy: 'Tessa Cruz · Treasurer',
+    );
+
+    final List<AuditLog> logs = await audit.getRecent(limit: 2);
+    expect(logs, hasLength(2));
+    expect(logs.first.action, 'Approved expense');
+    expect(logs.first.performedBy, 'Tessa Cruz · Treasurer');
+    expect(await audit.count(), greaterThanOrEqualTo(2));
+  });
+
+  test('provider scopes queues and advances the full approval chain', () async {
+    final ConnectivityService connectivity = ConnectivityService();
+    final LedgerProvider ledger = LedgerProvider(
+      expenseRepository: expenses,
+      auditRepository: audit,
+      syncService: SyncService(
+        expenseRepository: expenses,
+        auditRepository: audit,
+        connectivityService: connectivity,
+      ),
+      connectivityService: connectivity,
+      pdfService: const LiquidationPdfService(),
+    );
+    addTearDown(ledger.dispose);
+
+    await ledger.initialize();
+    expect(ledger.isInitialized, isTrue);
+    expect(ledger.error, isNull);
+    expect(ledger.events, hasLength(2));
+    expect(ledger.selectedEvent?.title, 'Intramurals 2026');
+    expect(ledger.expenses, hasLength(12));
+    expect(ledger.pendingOnlyCount, 2);
+    expect(ledger.flaggedCount, 1);
+    expect(ledger.rejectedCount, 1);
+    expect(ledger.totalBudget, 60000);
+    expect(ledger.totalSpent, 52000);
+
+    // Each reviewer queue contains only its own tier.
+    final List<Expense> treasurerQueue = ledger.expensesForRole(
+      UserRole.treasurer,
+    );
+    expect(treasurerQueue, hasLength(2));
+    expect(
+      treasurerQueue.every(
+        (Expense expense) => expense.status == ExpenseStatus.pending,
+      ),
+      isTrue,
+    );
+    expect(ledger.awaitingMyReviewCount(UserRole.treasurer), 2);
+    expect(
+      ledger
+          .expensesForRole(UserRole.auditor)
+          .every(
+            (Expense expense) =>
+                expense.status == ExpenseStatus.treasurerVerified,
+          ),
+      isTrue,
+    );
+
+    final int targetId = treasurerQueue.first.id;
+    Expense current() =>
+        ledger.expenses.firstWhere((Expense expense) => expense.id == targetId);
+
+    final List<(UserRole, String)> chain = <(UserRole, String)>[
+      (UserRole.treasurer, ExpenseStatus.treasurerVerified),
+      (UserRole.auditor, ExpenseStatus.auditorChecked),
+      (UserRole.president, ExpenseStatus.presidentEndorsed),
+      (UserRole.adviser, ExpenseStatus.adviserApproved),
+    ];
+
+    final double spendBefore = ledger.totalSpent;
+    for (final (UserRole role, String expected) in chain) {
+      final LedgerActionResult result = await ledger.reviewExpense(
+        expense: current(),
+        role: role,
+        actorName: 'Test Reviewer',
+        action: ReviewAction.approve,
+      );
+      expect(result.success, isTrue, reason: result.message);
+      expect(current().status, expected);
+      // In-flight approvals must never affect official spend.
+      if (expected != ExpenseStatus.adviserApproved) {
+        expect(ledger.totalSpent, spendBefore);
+      }
+    }
+
+    expect(current().status, ExpenseStatus.adviserApproved);
+    expect(ledger.totalSpent, spendBefore + current().amount);
+    expect(ledger.approvedExpenses.any((Expense e) => e.id == targetId), isTrue);
+    expect(
+      ledger.expensesForRole(UserRole.adviser).any((Expense e) => e.id == targetId),
+      isFalse,
+    );
+
+    // Rejecting without a remark is refused; a real remark is persisted.
+    final Expense toReject = ledger
+        .expensesForRole(UserRole.treasurer)
+        .first;
+    final LedgerActionResult missingRemark = await ledger.reviewExpense(
+      expense: toReject,
+      role: UserRole.treasurer,
+      actorName: 'Test Reviewer',
+      action: ReviewAction.reject,
+    );
+    expect(missingRemark.success, isFalse);
+    expect(missingRemark.message, contains('at least 5 characters'));
+
+    final LedgerActionResult rejected = await ledger.reviewExpense(
+      expense: toReject,
+      role: UserRole.treasurer,
+      actorName: 'Test Reviewer',
+      action: ReviewAction.reject,
+      remarks: 'Receipt does not match the encoded amount.',
+    );
+    expect(rejected.success, isTrue);
+    expect(
+      ledger.expenses
+          .firstWhere((Expense expense) => expense.id == toReject.id)
+          .status,
+      ExpenseStatus.rejected,
+    );
+
+    // A stale action against an already-moved record is refused.
+    final LedgerActionResult stale = await ledger.reviewExpense(
+      expense: toReject,
+      role: UserRole.treasurer,
+      actorName: 'Test Reviewer',
+      action: ReviewAction.approve,
+    );
+    expect(stale.success, isFalse);
+    expect(stale.message, contains('no longer awaiting'));
+  });
+}

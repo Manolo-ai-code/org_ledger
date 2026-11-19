@@ -1,0 +1,49 @@
+name: org_ledger
+description: "OrgLedger — offline-first expense tracking, budgeting, and PDF liquidation for student organizations."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.14.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  material_ui: ^1.11.0
+
+  # Local persistence
+  sqflite: ^2.4.5
+  # Desktop (Windows/Linux/macOS) requires the FFI sqflite implementation.
+  # Kept as a normal dependency so `flutter run -d windows` can initialize it.
+  sqflite_common_ffi: ^2.4.7
+  path: ^1.9.1
+  path_provider: ^2.1.5
+
+  # State management
+  provider: ^6.1.5
+
+  # Connectivity / offline sync
+  connectivity_plus: ^7.3.2
+
+  # Charts
+  fl_chart: ^1.3.1
+
+  # Receipt capture, PDF reports and printing
+  image_picker: ^1.2.4
+  pdf: ^3.13.1
+  printing: ^5.15.1
+
+  # Formatting / security helpers
+  intl: ^0.20.3
+  crypto: ^3.0.7
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
