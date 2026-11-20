@@ -1,60 +1,85 @@
 # OrgLedger
 
-Offline-first expense tracking, budgeting, role-based approvals and PDF
+Offline-first expense tracking, budgeting, role-based approvals, and A4 PDF
 liquidation for student organizations.
 
-Built with Flutter, Material Design 3 and a local SQLite database. Every
-receipt, expense and audit entry stays on the device — no account, no network
-call and no backend are required to evaluate the app.
+Built with Flutter and Material 3 using local SQLite persistence. Financial
+records, receipts, and audit entries stay on-device in the current build—no
+bundled backend, account service, or network connection is required for core
+ledger operations.
 
 ---
 
 ## Highlights
 
-- **Role-bound permissions.** Six officer roles with credentials stored as salted
-  SHA-256 digests. There is deliberately **no in-app role switcher**; permissions
-  come from the authenticated account only.
+- **Offline-first local ledger.** SQLite stores `users`, `events`, `expenses`,
+  `audit_logs`, and `settings`; core viewing, submission, review, and reporting
+  work without connectivity.
+- **Authenticated RBAC (no role switcher).** Permissions are bound to the
+  signed-in account. Passwords are stored/verified as salted SHA-256 digests
+  (local/offline scheme).
+- **Member read-only access.** Members can view allowed records, budgets,
+  reports, and audit logs but **cannot** create, add, edit, submit, approve,
+  reject, or flag expenses.
+- **Officer workflow actions.** Authorized officer roles can submit expenses and
+  perform designated review actions by tier.
 - **Five-stage approval pipeline.**
   `Pending → Treasurer_Verified → Auditor_Checked → President_Endorsed → Adviser_Approved`.
-- **Mandatory remarks.** Rejecting or flagging an expense requires a written
-  reason (at least 5 characters) that is shown to the submitter.
-- **Approved-only budgeting.** Only `Adviser_Approved` records affect the official
-  spend, burn-down chart, category breakdown and PDF liquidation.
-- **Animated burn-down.** Emerald below 80%, amber at 80%+, red at 100%+, with
-  division-by-zero, negative-budget and NaN protection.
-- **Receipt capture.** Camera or gallery, copied into the app's private documents
-  folder so it survives cache cleanup; pinch-to-zoom receipt inspector.
-- **Offline queue.** New records are saved with `is_synced = 0`, shown with an
-  offline banner, and flushed automatically when connectivity returns
-  (`SyncService` is a documented local stub ready for a real API).
-- **One-tap PDF liquidation.** A formatted A4 report of approved expenses,
-  signatures block and budget summary via the platform share sheet.
-- **Audit trail.** Sign-ins, submissions, approvals, rejections, flags, syncs and
-  PDF exports are appended to a read-only history.
-- **Material 3 UI.** Emerald financial palette, light/dark/system themes,
-  responsive cards, `fl_chart` donut and line charts, and an accessible layout.
+- **Mandatory remarks.** Rejecting or flagging an expense requires written
+  remarks (at least 5 characters).
+- **Approved-only budgeting & liquidation.** Only `Adviser_Approved` expenses
+  count toward official spend, dashboard metrics, burn-down/category charts, and
+  the A4 liquidation PDF. Calculations guard against invalid values (e.g.
+  divide-by-zero/negative budget/NaN cases).
+- **Budget event management.** Create, edit, archive/restore, and select budget
+  events (starting budget and metadata) to scope expenses and reports.
+- **Receipt capture & local storage.** Camera/gallery receipts are copied into
+  the app’s private documents area for local access/inspection.
+- **Expense-only audit trail.** Immutable, expense-linked audit records capture
+  expense create/submit, stage transitions, reject/flag (with remarks), and
+  expense-related liquidation/sync actions. **No login/sign-in or other
+  non-expense audit records** are stored.
+- **Offline sync queue (local stub).** Expenses track local sync state
+  (`is_synced`); connectivity changes can trigger a flush that marks pending
+  records synced locally and logs per-expense sync audit events. There is no
+  bundled remote API in this build.
+- **Material 3 UI.** Role-aware navigation, light/dark/system themes, status
+  indicators, and charts for budget visibility.
 
 ---
 
-## Demo accounts
+## Roles and permissions
 
-All seeded accounts use the password **`password123`**.
+| Role | Can submit expenses | Review responsibility | Notes |
+| --- | --- | --- | --- |
+| Member | No | — | Read-only for expense actions |
+| Business Manager | Yes | — | Officer/submitter |
+| Secretary | Yes | — | Officer/submitter |
+| Treasurer | Yes | `Pending` | Stage 1 verification |
+| Auditor | Yes | `Treasurer_Verified` | Stage 2 audit/check |
+| President | Yes | `Auditor_Checked` | Stage 3 endorsement |
+| Adviser | Yes | `President_Endorsed` | Final approval + manager/admin capabilities |
 
-| Role | Email | Approval tier |
-| --- | --- | --- |
-| Business Manager | `bm@orgledger.app` | Submitter |
-| Secretary | `secretary@orgledger.app` | Submitter |
-| Treasurer | `treasurer@orgledger.app` | Verifies new expenses |
-| Auditor | `auditor@orgledger.app` | Audits treasurer-verified expenses |
-| President | `president@orgledger.app` | Endorses audited expenses |
-| Adviser | `adviser@orgledger.app` | Grants final approval |
+Permissions are enforced by authenticated role across UI and application/data
+logic. There is **no in-app role-switcher** dropdown.
 
-The login screen also has quick-fill chips for each role. Signing in as different
-officers in sequence is the intended way to walk an expense through the chain.
+---
 
-Seeded data includes **Intramurals 2026** (₱60,000 budget, ~86.7% approved spend)
-and **Leadership Summit 2026** (₱25,000), plus pending, verified, endorsed,
-rejected, flagged and approved examples.
+## Expense workflow rules
+
+1. Authorized officers submit expenses (with optional receipt) as `Pending` for
+   the selected budget event.
+2. Each reviewer acts only on the status assigned to their tier:
+   - Treasurer: `Pending`
+   - Auditor: `Treasurer_Verified`
+   - President: `Auditor_Checked`
+   - Adviser: `President_Endorsed`
+3. Approving advances the expense to the next status; Adviser approval makes it
+   `Adviser_Approved` (final/official).
+4. Reject or flag actions require mandatory remarks (≥ 5 characters) and are
+   recorded in the expense-only audit trail.
+5. Only `Adviser_Approved` expenses are included in official spend totals,
+   burn-down/category metrics, and liquidation PDF exports.
 
 ---
 
@@ -65,52 +90,57 @@ flutter pub get
 flutter run
 ```
 
-Requires Flutter 3.50+ / Dart 3.14+. The project was developed against the
-Material 3 `material_ui` package. The app targets Android and iOS, so running it
-needs the Android SDK or Xcode installed.
+- **SDK:** Dart `^3.14.0` (see `pubspec.yaml`)
+- **UI:** Material 3 via `package:material_ui/material_ui.dart`
+- **Android package:** `com.orgledger.app`
 
-### Quality checks
+### First-run behavior
+
+- In normal (non-demo) mode, if no users exist, the app requires first-run setup
+  to create the initial **Adviser** account before regular use.
+- Session state and preferences (e.g. theme, selected event) are persisted
+  locally.
+
+### Demo data (optional)
+
+Demo seeding and demo quick-fill accounts are **disabled by default**
+(`DEMO_SEED=false`). To run a demo-seeded build:
+
+```bash
+flutter run --dart-define=DEMO_SEED=true
+```
+
+When `DEMO_SEED` is enabled, seeded demo officer accounts are available with the
+password `password123` (demo login quick-fill may be shown in UI for evaluation
+builds). Do not enable demo seeding for normal/production-like usage.
+
+---
+
+## Quality checks
 
 ```bash
 flutter analyze
 flutter test
 ```
 
-The test suite covers the approval lifecycle, budget-ratio guards and
-bulletproof `Expense.fromMap` parsing. SQLite integration tests run the real
-schema, seeder, password hashing, joins and settings on the Dart VM (via
-`sqflite_common_ffi`), and narrow-screen widget tests guard login, the dashboard,
-status chips and the expense inspector against overflow.
+The repository includes automated tests covering workflow/budget logic, parsing,
+database/integration behavior (including FFI-backed SQLite tests where used),
+and UI/widget cases.
 
 ---
 
-## Workflow rules
+## Data, offline behavior, and sync
 
-1. **Business Manager** and **Secretary** accounts submit expenses with receipts.
-2. Each reviewer only sees and acts on the exact status of their tier:
-   - Treasurer acts on `Pending`
-   - Auditor acts on `Treasurer_Verified`
-   - President acts on `Auditor_Checked`
-   - Adviser acts on `President_Endorsed`
-3. Approving forwards to the next status. The Adviser's approval is final and
-   locks the record.
-4. Reject/flag is terminal for the current record and always stores a remark.
-5. Pending, verified, endorsed, flagged and rejected records never count toward
-   official spend or the liquidation PDF.
-
----
-
-## Offline model
-
-- SQLite (`org_ledger.db`) stores `users`, `events`, `expenses`, `audit_logs`
-  and `app_settings`.
-- The session user id and theme mode are persisted in `app_settings`, so no
-  extra dependency is needed.
-- Receipts are copied to `<documents>/receipts/` before the expense is stored.
-- `ConnectivityService` powers the offline banner. On an offline → online
-  transition, `LedgerProvider` flushes the `is_synced = 0` queue.
-- `SyncService.pushRecord` is the single integration point for a future remote
-  API; this build marks local records as synced and writes an audit entry.
+- **Database:** local `org_ledger.db` (SQLite, schema v4) with additive
+  migrations/recovery behavior.
+- **Tables:** `users`, `events`, `expenses`, `audit_logs`, `settings`.
+- **Receipts:** copied to the app’s private documents `receipts/` directory and
+  referenced by local path.
+- **Connectivity:** online/offline state is detected to inform UI and sync
+  behavior.
+- **Sync integration point:** `SyncService.pushRecord(...)` is the designated
+  extension point for a future backend; current builds mark pending records as
+  synced locally when flushed.
 
 ---
 
@@ -118,58 +148,52 @@ status chips and the expense inspector against overflow.
 
 ```
 lib/
-├── app.dart                     # MultiProvider, MaterialApp, AuthGate
-├── main.dart                    # Entry point
+├── app.dart                     # App bootstrap, providers, auth gate, theming
+├── main.dart                    # Entry point (desktop FFI setup)
 ├── core/
-│   ├── constants/               # app constants, categories, statuses, demo users
-│   ├── theme/                   # MD3 light/dark themes, colors, role visuals
+│   ├── constants/               # app constants, categories, statuses, demo accounts
+│   ├── theme/                   # M3 themes/colors/visual mappings
 │   └── utils/                   # formatting, validators, password hashing
 ├── data/
-│   ├── database/                # schema, indexes, seeding, settings
-│   ├── models/                  # AppUser, OrgEvent, Expense, AuditLog, UserRole
-│   ├── repositories/            # auth, expenses, audit
-│   └── services/                # connectivity, receipt storage, sync, PDF
-├── providers/                   # session, ledger metrics/mutations, audit, theme
+│   ├── database/                # DatabaseHelper, schema, migrations, settings
+│   ├── models/                  # UserRole, AppUser, OrgEvent, Expense, AuditLog
+│   ├── repositories/            # auth, expenses, audit persistence/query logic
+│   └── services/                # connectivity, receipt storage, sync, PDF export
+├── providers/                   # theme/session, ledger, audit state & orchestration
 ├── screens/
-│   ├── auth/                    # login + registration
-│   ├── approvals/               # tier-filtered approval feed
-│   ├── audit/                   # read-only audit trail
-│   ├── dashboard/               # KPIs, burn-down, category donut
-│   ├── expenses/                # list, add expense, receipt inspector/viewer
-│   ├── home/                    # role-bound bottom navigation shell
-│   ├── profile/                 # permissions, theme, sign-out
+│   ├── auth/                    # setup, login, registration
+│   ├── approvals/               # tier-scoped approval feed
+│   ├── audit/                   # expense-only audit trail
+│   ├── dashboard/               # KPIs, events, charts, export/sync actions
+│   ├── expenses/                # list, add expense, inspector/receipt viewer
+│   ├── home/                    # role-aware navigation shell
+│   ├── members/                 # member/officer administration
+│   ├── profile/                 # account, permissions, theme, sign-out
 │   └── splash/
-└── widgets/                     # cards, charts, chips, banners, dialogs
+└── widgets/                     # shared UI components (cards, charts, dialogs, etc.)
 ```
 
 ---
 
 ## Platform configuration
 
-Android (`android/app/src/main/AndroidManifest.xml`):
+**Android** (`android/app/src/main/AndroidManifest.xml`):
+- Camera/network/connectivity permissions and media/read permissions as required
+  for receipt capture/selection and connectivity checks.
 
-- `CAMERA`, `INTERNET`, `ACCESS_NETWORK_STATE`
-- `READ_MEDIA_IMAGES` and `READ_EXTERNAL_STORAGE` (max SDK 32)
-- Camera features marked optional
+**iOS** (`ios/Runner/Info.plist`):
+- Camera and photo library usage descriptions for receipt capture/selection.
 
-iOS (`ios/Runner/Info.plist`):
-
-- `NSCameraUsageDescription`
-- `NSPhotoLibraryUsageDescription`
-- `NSPhotoLibraryAddUsageDescription`
-
-If a permission is denied, the app keeps working and shows a friendly message
-with a gallery alternative.
+If a permission is denied, the app should continue to function where possible and
+provide user-facing feedback/alternatives.
 
 ---
 
 ## Branding assets
 
-- App logo: `assets/branding/logo.png` (declared in `pubspec.yaml`).
-- In-app mark: `lib/widgets/brand_mark.dart` renders the logo asset with a
-  programmatic fallback.
-- Android launcher icons and the native launch splash are generated from the same
-  logo under `android/app/src/main/res/`.
+- App logo: `assets/branding/` (declared in `pubspec.yaml`)
+- In-app brand rendering: `lib/widgets/brand_mark.dart`
+- Android launcher/splash assets are generated under `android/app/src/main/res/`
 
 ---
 
@@ -177,13 +201,12 @@ with a gallery alternative.
 
 OrgLedger is distributed as sideloadable APKs (not via Play Store).
 
-- **Package:** `com.orgledger.app` (Android `applicationId` / `namespace`).
-- **Version:** taken from `pubspec.yaml` (`version: 1.0.0+1`).
-- **Signing:** release builds are **debug-signed by default** for simple
-  sideloading. For consistent updates across machines, configure a release
-  keystore via `android/key.properties` and update
-  `android/app/build.gradle.kts` (do **not** commit `key.properties` or
-  keystores; they are ignored by `.gitignore`).
+- **Package:** `com.orgledger.app`
+- **Version:** from `pubspec.yaml` (`version: 1.0.0+1`)
+- **Signing:** release builds are debug-signed by default for sideloading. For
+  consistent updates across machines, configure a release keystore via
+  `android/key.properties` and update `android/app/build.gradle.kts` (do **not**
+  commit `key.properties` or keystores).
 
 ```bash
 flutter clean
@@ -191,29 +214,35 @@ flutter pub get
 flutter analyze
 flutter test
 flutter build apk --release
-# Optional: smaller per-ABI artifacts for GitHub releases
+# Optional: smaller per-ABI artifacts
 flutter build apk --release --split-per-abi
 ```
 
-Outputs:
-
-- `build/app/outputs/flutter-apk/app-release.apk` (universal)
-- `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`
-- `build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk`
-- `build/app/outputs/flutter-apk/app-x86_64-release.apk` (when split)
+Outputs are written under `build/app/outputs/flutter-apk/` (e.g.
+`app-release.apk` and per-ABI APKs when split).
 
 > **Note:** if your project path contains parentheses/spaces and the Android/Gradle
-> build fails with path-related errors, run the build from a junction/symlink path
-> without those characters (the output is still written to the project `build/`
-> directory).
+> build fails with path-related errors, run the build from a junction/symlink
+> path without those characters.
 
 ---
 
 ## Data & privacy
 
-- Passwords are hashed with a static salt + SHA-256. This is appropriate for an
-  offline demo; production deployments should use a per-user salt and a
-  memory-hard algorithm such as Argon2id on a server.
-- Deleting the app removes the SQLite database and all stored receipt images.
-- The liquidation PDF is generated locally and only leaves the device when the
-  user chooses a target in the system share sheet.
+- **Credentials:** stored locally as salted SHA-256 digests. This is appropriate
+  for an offline/local app context; production deployments should use per-user
+  salts and a memory-hard algorithm (e.g. Argon2id) with server-side controls.
+- **On-device data:** the SQLite database and stored receipt images remain on the
+  device in the current build.
+- **Uninstall impact:** deleting the app removes local app data, including the
+  database and stored receipt images.
+- **Export:** liquidation PDFs are generated locally and only leave the device if
+  the user explicitly shares/prints them via the system dialog.
+- **Audit scope:** audit logging is expense-only and expense-linked (no login/sign-in records).
+
+---
+
+## License / notes
+
+This repository is an academic/mobile development project. Review and adapt
+security, backup, and sync integrations before any production deployment.
