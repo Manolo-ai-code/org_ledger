@@ -267,6 +267,25 @@ class ExpenseRepository {
     );
   }
 
+  /// Returns expenses currently queued for sync (`is_synced = 0`).
+  Future<List<Expense>> getUnsyncedExpenses({int? eventId}) async {
+    final Database db = await _db.database;
+    final List<String> clauses = <String>['e.is_synced = 0'];
+    final List<Object?> args = <Object?>[];
+    if (eventId != null && eventId > 0) {
+      clauses.add('e.event_id = ?');
+      args.add(eventId);
+    }
+    final String where = 'WHERE ${clauses.join(' AND ')}';
+    final List<Map<String, Object?>> rows = await db.rawQuery(
+      '$_expenseSelect $where ORDER BY e.created_at ASC, e.id ASC',
+      args,
+    );
+    return rows
+        .map((Map<String, Object?> row) => Expense.fromMap(row))
+        .toList(growable: false);
+  }
+
   /// Marks every locally-queued record as synced.
   ///
   /// This is the single write point used by [SyncService]; when a real backend

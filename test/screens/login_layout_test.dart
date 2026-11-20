@@ -2,7 +2,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:org_ledger/core/theme/app_theme.dart';
 import 'package:org_ledger/data/database/database_helper.dart';
-import 'package:org_ledger/data/repositories/audit_repository.dart';
 import 'package:org_ledger/data/repositories/auth_repository.dart';
 import 'package:org_ledger/providers/theme_provider.dart';
 import 'package:org_ledger/providers/user_role_provider.dart';
@@ -19,7 +18,6 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final DatabaseHelper db = DatabaseHelper(seedDemoData: false);
-    final AuditRepository audit = AuditRepository(db);
 
     await tester.pumpWidget(
       MultiProvider(
@@ -30,7 +28,6 @@ void main() {
           ChangeNotifierProvider<UserRoleProvider>(
             create: (_) => _IdleSession(
               authRepository: AuthRepository(db),
-              auditRepository: audit,
               databaseHelper: db,
             ),
           ),
@@ -54,7 +51,6 @@ void main() {
 class _IdleSession extends UserRoleProvider {
   _IdleSession({
     required super.authRepository,
-    required super.auditRepository,
     required super.databaseHelper,
   });
 

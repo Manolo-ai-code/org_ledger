@@ -6,7 +6,6 @@ import '../data/database/database_helper.dart';
 import '../data/models/app_user.dart';
 import '../data/models/expense.dart';
 import '../data/models/user_role.dart';
-import '../data/repositories/audit_repository.dart';
 import '../data/repositories/auth_repository.dart';
 
 /// Result returned by login/registration/profile actions.
@@ -30,14 +29,11 @@ class AuthResult {
 class UserRoleProvider extends ChangeNotifier {
   UserRoleProvider({
     required AuthRepository authRepository,
-    required AuditRepository auditRepository,
     required DatabaseHelper databaseHelper,
   })  : _auth = authRepository,
-        _audit = auditRepository,
         _db = databaseHelper;
 
   final AuthRepository _auth;
-  final AuditRepository _audit;
   final DatabaseHelper _db;
 
   AppUser? _currentUser;
@@ -123,6 +119,9 @@ class UserRoleProvider extends ChangeNotifier {
   }
 
   /// Authenticates an account by username (or email) and persists the session.
+  ///
+  /// Sign-in/session events are intentionally not recorded in the expense-only
+  /// audit trail.
   Future<AuthResult> login({
     String? identifier,
     String? username,
@@ -155,10 +154,6 @@ class UserRoleProvider extends ChangeNotifier {
       } catch (_) {
         // Session persistence is best effort; the in-memory sign-in remains valid.
       }
-      await _tryAudit(
-        'Signed in to OrgLedger',
-        '${user.name} · ${user.role.label}',
-      );
       final String greeting = user.name.trim().split(RegExp(r'\s+')).first;
       return AuthResult(
         success: true,
@@ -171,10 +166,6 @@ class UserRoleProvider extends ChangeNotifier {
       final String message =
           error is AuthException ? error.message : _friendlyAuthError(error);
       _error = message;
-      await _tryAudit(
-        'Failed sign-in attempt for ${raw.toLowerCase()}',
-        'System',
-      );
       return AuthResult(success: false, message: message);
     } finally {
       _isBusy = false;
@@ -185,7 +176,8 @@ class UserRoleProvider extends ChangeNotifier {
   /// Creates an account without starting a session.
   ///
   /// Public registration always creates an active Member. The caller returns to
-  /// the login screen with the new username prefilled.
+  /// the login screen with the new username prefilled. Account creation is not
+  /// recorded in the expense-only audit trail.
   Future<AuthResult> registerAccount({
     required String name,
     required String username,
@@ -208,10 +200,6 @@ class UserRoleProvider extends ChangeNotifier {
         email: email,
         password: password,
         role: UserRole.member,
-      );
-      await _tryAudit(
-        'Registered a new ${user.role.label} account (@${user.username})',
-        '${user.name} · ${user.role.label}',
       );
       return AuthResult(
         success: true,
@@ -295,10 +283,6 @@ class UserRoleProvider extends ChangeNotifier {
         } catch (_) {
           // Best effort; setup already created the account and signed in in-memory.
         }
-        await _tryAudit(
-          'Completed first-run setup and created initial Adviser account (@${user.username})',
-          '${user.name} · ${user.role.label}',
-        );
         return AuthResult(
           success: true,
           message: 'Setup complete. Welcome, ${user.name.split(' ').first}.',
@@ -357,10 +341,6 @@ class UserRoleProvider extends ChangeNotifier {
         email: email,
       );
       _currentUser = updated;
-      await _tryAudit(
-        'Updated profile information',
-        '${updated.name} · ${updated.role.label}',
-      );
       return AuthResult(
         success: true,
         message: 'Profile updated.',
@@ -399,10 +379,6 @@ class UserRoleProvider extends ChangeNotifier {
         newPassword: newPassword,
       );
       _currentUser = updated;
-      await _tryAudit(
-        'Changed account password',
-        '${updated.name} · ${updated.role.label}',
-      );
       return AuthResult(
         success: true,
         message: 'Password changed successfully.',
@@ -461,10 +437,6 @@ class UserRoleProvider extends ChangeNotifier {
     notifyListeners();
     try {
       final AppUser updated = await _auth.deactivateUser(target.id);
-      await _tryAudit(
-        'Deactivated account @${target.username} (${target.name})',
-        actorLabel,
-      );
       _refreshManagedUser(updated);
       return AuthResult(
         success: true,
@@ -494,10 +466,6 @@ class UserRoleProvider extends ChangeNotifier {
     notifyListeners();
     try {
       final AppUser updated = await _auth.reactivateUser(target.id);
-      await _tryAudit(
-        'Reactivated account @${target.username} (${target.name})',
-        actorLabel,
-      );
       _refreshManagedUser(updated);
       return AuthResult(
         success: true,
@@ -534,11 +502,6 @@ class UserRoleProvider extends ChangeNotifier {
         userId: target.id,
         role: role,
         term: term,
-      );
-      await _tryAudit(
-        'Appointed @${target.username} (${target.name}) as ${role.label}'
-        '${term != null && term.trim().isNotEmpty ? ' for ${term.trim()}' : ''}',
-        actorLabel,
       );
       await loadManagedUsers(silent: true);
       if (_currentUser?.id == updated.id) {
@@ -579,10 +542,6 @@ class UserRoleProvider extends ChangeNotifier {
         newPassword: newPassword,
         requireChange: true,
       );
-      await _tryAudit(
-        'Reset password for @${target.username} (${target.name})',
-        actorLabel,
-      );
       await loadManagedUsers(silent: true);
       return AuthResult(
         success: true,
@@ -614,10 +573,6 @@ class UserRoleProvider extends ChangeNotifier {
     notifyListeners();
     try {
       await _auth.applyElectionResults(term: term, assignments: assignments);
-      await _tryAudit(
-        'Applied election results for ${term.trim()}',
-        actorLabel,
-      );
       await loadManagedUsers(silent: true);
       final AppUser? self = _currentUser;
       if (self != null) {
@@ -648,19 +603,12 @@ class UserRoleProvider extends ChangeNotifier {
   }
 
   Future<void> logout() async {
-    final AppUser? user = _currentUser;
     _currentUser = null;
     _managedUsers = <AppUser>[];
     _error = null;
     notifyListeners();
     try {
       await _db.removeSetting(AppConstants.settingSessionUserId);
-      if (user != null) {
-        await _tryAudit(
-          'Signed out of OrgLedger',
-          '${user.name} · ${user.role.label}',
-        );
-      }
     } catch (_) {
       // The in-memory session is already cleared; persistence is best effort.
     }
@@ -672,15 +620,6 @@ class UserRoleProvider extends ChangeNotifier {
     }
     _error = null;
     notifyListeners();
-  }
-
-  Future<void> _tryAudit(String action, String actor) async {
-    try {
-      await _audit.log(action: action, performedBy: actor);
-    } catch (_) {
-      // Authentication/profile actions must not fail because an audit row could
-      // not be written.
-    }
   }
 
   String _friendlyAuthError(Object error) {

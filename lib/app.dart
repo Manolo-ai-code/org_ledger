@@ -90,7 +90,6 @@ class _OrgLedgerAppState extends State<OrgLedgerApp> {
     _themeProvider = ThemeProvider(deps.databaseHelper);
     _sessionProvider = UserRoleProvider(
       authRepository: deps.authRepository,
-      auditRepository: deps.auditRepository,
       databaseHelper: deps.databaseHelper,
     );
     _ledgerProvider = LedgerProvider(

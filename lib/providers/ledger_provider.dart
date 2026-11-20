@@ -337,10 +337,6 @@ class LedgerProvider extends ChangeNotifier {
         eventType: eventType.trim().isEmpty ? 'General' : eventType.trim(),
         schoolYear: schoolYear.trim(),
       );
-      await _tryAudit(
-        'Created budget event "$cleanTitle" (${AppFormat.currency(budget)})',
-        '${actor.name} · ${actor.role.label}',
-      );
       await _loadEventsInternal(preferredEventId: id);
       return LedgerActionResult(
         success: true,
@@ -397,10 +393,7 @@ class LedgerProvider extends ChangeNotifier {
           message: 'The selected budget event could not be found.',
         );
       }
-      await _tryAudit(
-        'Updated budget event "${event.title}" → "$cleanTitle" (${AppFormat.currency(budget)})',
-        '${actor.name} · ${actor.role.label}',
-      );
+      
       await _loadEventsInternal(preferredEventId: event.id);
       return LedgerActionResult(
         success: true,
@@ -436,12 +429,7 @@ class LedgerProvider extends ChangeNotifier {
           message: 'This budget event could not be updated.',
         );
       }
-      await _tryAudit(
-        archived
-            ? 'Archived budget event "${event.title}"'
-            : 'Restored budget event "${event.title}"',
-        '${actor.name} · ${actor.role.label}',
-      );
+      
       await _loadEventsInternal(
         preferredEventId:
             _selectedEvent?.id == event.id ? null : _selectedEvent?.id,
@@ -634,11 +622,11 @@ class LedgerProvider extends ChangeNotifier {
     String customCategory = '',
     String receiptImagePath = '',
   }) async {
-    if (!user.role.canSubmitExpenses) {
+    if (!user.isActive || !user.role.canSubmitExpenses) {
       return const LedgerActionResult(
         success: false,
         message:
-            'Your account cannot submit expenses. Contact your adviser if you need access.',
+            'Members have read-only access. Only authenticated officers can add expenses.',
       );
     }
 
@@ -702,10 +690,12 @@ class LedgerProvider extends ChangeNotifier {
     );
 
     try {
-      final int id = await _expensesRepo.insertExpense(expense);
-      await _tryAudit(
-        'Submitted "$cleanTitle" for review',
-        '${user.name} · ${user.role.label}',
+            final int id = await _expensesRepo.insertExpense(expense);
+      await _tryExpenseAudit(
+        expense.copyWith(id: id),
+        action: 'Submitted expense for review',
+        performedBy: '${user.name} · ${user.role.label}',
+        status: ExpenseStatus.pending,
       );
       await _refreshAfterMutation();
       return LedgerActionResult(
@@ -758,8 +748,9 @@ class LedgerProvider extends ChangeNotifier {
           );
         }
         targetStatus = next;
-        auditAction =
-            'Approved "${expense.title}" → ${ExpenseStatus.label(next)}';
+        auditAction = targetStatus == ExpenseStatus.adviserApproved
+            ? 'Approved and locked expense'
+            : 'Approved expense and advanced to ${ExpenseStatus.label(targetStatus)}';
         break;
       case ReviewAction.reject:
         if (cleanRemarks.length < 5) {
@@ -769,7 +760,7 @@ class LedgerProvider extends ChangeNotifier {
           );
         }
         targetStatus = ExpenseStatus.rejected;
-        auditAction = 'Rejected "${expense.title}": $cleanRemarks';
+        auditAction = 'Rejected expense';
         break;
       case ReviewAction.flag:
         if (cleanRemarks.length < 5) {
@@ -779,10 +770,9 @@ class LedgerProvider extends ChangeNotifier {
           );
         }
         targetStatus = ExpenseStatus.flagged;
-        auditAction = 'Flagged "${expense.title}": $cleanRemarks';
+        auditAction = 'Flagged expense';
         break;
     }
-
     try {
       final int updated = await _expensesRepo.updateStatus(
         expenseId: expense.id,
@@ -799,7 +789,19 @@ class LedgerProvider extends ChangeNotifier {
         );
       }
 
-      await _tryAudit(auditAction, '$actorName · ${role.label}');
+      final Expense reviewedExpense = expense.copyWith(
+        status: targetStatus,
+        remarks: cleanRemarks,
+        isSynced: false,
+        updatedAt: DateTime.now(),
+      );
+      await _tryExpenseAudit(
+        reviewedExpense,
+        action: auditAction,
+        performedBy: '$actorName · ${role.label}',
+        status: targetStatus,
+        remarks: cleanRemarks,
+      );
       await _refreshAfterMutation();
 
       final String message;
@@ -889,11 +891,15 @@ class LedgerProvider extends ChangeNotifier {
         preparedBy: preparedBy,
       );
       if (shared) {
-        await _tryAudit(
-          'Exported liquidation PDF for "${event.title}" '
-          '(${approved.length} approved items)',
-          preparedBy,
-        );
+        for (final Expense expense in approved) {
+          await _tryExpenseAudit(
+            expense,
+            action: 'Included in liquidation report export',
+            performedBy: preparedBy,
+            status: expense.status,
+            remarks: 'Liquidation report for "${event.title}"',
+          );
+        }
       }
       return LedgerActionResult(
         success: true,
@@ -961,14 +967,26 @@ class LedgerProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> _tryAudit(String action, String actor) async {
+  /// Best-effort, expense-only audit entry. Non-expense events are never logged.
+  Future<void> _tryExpenseAudit(
+    Expense expense, {
+    required String action,
+    required String performedBy,
+    String? status,
+    String? remarks,
+  }) async {
     try {
-      await _auditRepo.log(action: action, performedBy: actor);
+      await _auditRepo.logExpenseAction(
+        expense: expense,
+        action: action,
+        performedBy: performedBy,
+        status: status,
+        remarks: remarks,
+      );
     } catch (_) {
       // The primary action already succeeded; auditing is best effort.
     }
   }
-
   void _notify() {
     if (!_disposed) {
       notifyListeners();

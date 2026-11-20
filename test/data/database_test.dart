@@ -261,20 +261,35 @@ void main() {
     expect(await db.getSetting('theme_mode'), 'dark');
   });
 
-  test('writes audit entries newest first', () async {
-    await audit.log(
-      action: 'Signed in',
+  test('writes expense-only audit entries newest first', () async {
+    final OrgEvent event = (await expenses.getEvents()).first;
+    final Expense expense = (await expenses.getExpenses(eventId: event.id)).first;
+
+    await audit.logExpenseAction(
+      expense: expense,
+      action: 'Approved expense and advanced workflow',
       performedBy: 'Tessa Cruz · Treasurer',
+      status: ExpenseStatus.treasurerVerified,
     );
-    await audit.log(
-      action: 'Approved expense',
-      performedBy: 'Tessa Cruz · Treasurer',
+    await audit.logExpenseAction(
+      expense: expense,
+      action: 'Flagged expense',
+      performedBy: 'Audie Reyes · Auditor',
+      status: ExpenseStatus.flagged,
+      remarks: 'Receipt amount does not match the encoded amount.',
     );
 
     final List<AuditLog> logs = await audit.getRecent(limit: 2);
     expect(logs, hasLength(2));
-    expect(logs.first.action, 'Approved expense');
-    expect(logs.first.performedBy, 'Tessa Cruz · Treasurer');
+    expect(logs.first.action, 'Flagged expense');
+    expect(logs.first.expenseId, expense.id);
+    expect(logs.first.expenseTitle, expense.title);
+    expect(logs.first.status, ExpenseStatus.flagged);
+    expect(logs.first.performedBy, 'Audie Reyes · Auditor');
+    expect(
+      logs.first.remarks,
+      'Receipt amount does not match the encoded amount.',
+    );
     expect(await audit.count(), greaterThanOrEqualTo(2));
   });
 
@@ -303,7 +318,6 @@ void main() {
     final AuthRepository prodAuth = AuthRepository(prodDb);
     final UserRoleProvider session = UserRoleProvider(
       authRepository: prodAuth,
-      auditRepository: AuditRepository(prodDb),
       databaseHelper: prodDb,
     );
     addTearDown(session.dispose);
@@ -364,7 +378,6 @@ void main() {
 
     final UserRoleProvider session = UserRoleProvider(
       authRepository: AuthRepository(brokenDb),
-      auditRepository: AuditRepository(brokenDb),
       databaseHelper: brokenDb,
     );
     addTearDown(session.dispose);

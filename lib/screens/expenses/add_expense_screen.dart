@@ -171,6 +171,10 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
       setState(() => _error = 'Your session has expired. Please sign in again.');
       return;
     }
+    if (!session.canSubmitExpenses) {
+      setState(() => _error = 'Members have read-only access and cannot submit expenses.');
+      return;
+    }
     if (event == null) {
       setState(() => _error = 'Select an event before adding an expense.');
       return;
@@ -239,6 +243,34 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
     final UserRoleProvider session = context.watch<UserRoleProvider>();
     final OrgEvent? event = ledger.selectedEvent;
     final bool canSubmit = session.canSubmitExpenses;
+
+    if (!canSubmit) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Add expense')),
+        body: const Center(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Icon(Icons.lock_outline_rounded, size: 40),
+                SizedBox(height: 12),
+                Text(
+                  'Read-only access',
+                  textAlign: TextAlign.center,
+                ),
+                SizedBox(height: 6),
+                Text(
+                  'Members can view records but cannot add or submit expenses. '
+                  'Sign in with an authenticated officer account to create an expense.',
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
 
     return Scaffold(
       appBar: AppBar(

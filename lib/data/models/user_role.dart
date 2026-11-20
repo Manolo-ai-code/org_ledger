@@ -4,7 +4,9 @@ import '../../core/constants/expense_status.dart';
 ///
 /// The [storageValue] is exactly what is stored in the `users.role` column.
 /// [member] is a non-officer role: members may sign in, manage their profile,
-/// and submit/view their own expenses, but they never review approvals.
+/// and view allowed records, but they never create/submit expenses or review
+/// approvals. All expense creation and workflow actions are role-bound to the
+/// authenticated account.
 enum UserRole {
   member('Member', 'Member'),
   businessManager('BusinessManager', 'Business Manager'),
@@ -35,12 +37,12 @@ enum UserRole {
   /// Officer roles that participate in expense submission and/or review.
   bool get isOfficer => this != UserRole.member;
 
-  /// Submitters create expenses; reviewers move them along the chain.
-  /// Members may submit their own requests but never review approvals.
-  bool get canSubmitExpenses =>
-      this == UserRole.member ||
-      this == UserRole.businessManager ||
-      this == UserRole.secretary;
+  /// Roles allowed to create/submit expenses.
+  ///
+  /// Members are strictly read-only for expense creation. Authenticated officer
+  /// roles may add/create expenses and still participate in their designated
+  /// workflow steps per existing rules.
+  bool get canSubmitExpenses => isOfficer;
 
   bool get isReviewer =>
       this == UserRole.treasurer ||
@@ -74,19 +76,19 @@ enum UserRole {
   String get responsibility {
     switch (this) {
       case UserRole.member:
-        return 'May submit personal expense requests and view their own records.';
+        return 'Read-only access: may view allowed expenses, budgets, burn-down, reports, and logs.';
       case UserRole.businessManager:
         return 'Prepares and submits event expenses with receipts.';
       case UserRole.secretary:
         return 'Encodes purchases and keeps documentation complete.';
       case UserRole.treasurer:
-        return 'Verifies receipts and confirms funds were disbursed.';
+        return 'Verifies receipts and confirms funds were disbursed; may also submit expenses.';
       case UserRole.auditor:
-        return 'Checks arithmetic, receipts and policy compliance.';
+        return 'Checks arithmetic, receipts and policy compliance; may also submit expenses.';
       case UserRole.president:
-        return 'Endorses vetted expenses for final approval.';
+        return 'Endorses vetted expenses for final approval; may also submit expenses.';
       case UserRole.adviser:
-        return 'Grants final approval, locks the liquidation, and manages turnover.';
+        return 'Grants final approval, locks the liquidation, manages turnover, and may submit expenses.';
     }
   }
 }

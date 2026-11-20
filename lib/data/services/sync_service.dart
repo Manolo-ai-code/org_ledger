@@ -1,3 +1,4 @@
+import '../models/expense.dart';
 import '../repositories/audit_repository.dart';
 import '../repositories/expense_repository.dart';
 import 'connectivity_service.dart';
@@ -36,6 +37,8 @@ class SyncService {
   final AuditRepository _audit;
   final ConnectivityService _connectivity;
 
+  /// Flushes queued expenses and records an expense-linked audit entry for each
+  /// synchronized expense record.
   Future<SyncResult> syncPending({required String performedBy}) async {
     final bool online = await _connectivity.isOnline();
     if (!online) {
@@ -47,8 +50,8 @@ class SyncService {
       );
     }
 
-    final int pending = await _expenses.pendingSyncCount();
-    if (pending == 0) {
+    final List<Expense> pending = await _expenses.getUnsyncedExpenses();
+    if (pending.isEmpty) {
       return const SyncResult(
         success: true,
         offline: false,
@@ -61,20 +64,25 @@ class SyncService {
       // Placeholder for a real backend upload. A production implementation
       // should upload each row and only flip its flag on a 2xx response.
       final int synced = await _expenses.markAllSynced();
-      try {
-        await _audit.log(
-          action:
-              'Synchronized $synced offline ${synced == 1 ? 'record' : 'records'}',
-          performedBy: performedBy,
-        );
-      } catch (_) {
-        // Auditing must not roll back a successful sync.
+      final List<Expense> syncedExpenses =
+          pending.take(synced > 0 ? synced : pending.length).toList();
+      for (final Expense expense in syncedExpenses) {
+        try {
+          await _audit.logExpenseAction(
+            expense: expense,
+            action: 'Synchronized offline expense record',
+            performedBy: performedBy,
+          );
+        } catch (_) {
+          // Auditing must not roll back a successful sync.
+        }
       }
+      final int count = synced > 0 ? synced : syncedExpenses.length;
       return SyncResult(
         success: true,
         offline: false,
-        syncedCount: synced,
-        message: 'Synced $synced ${synced == 1 ? 'record' : 'records'}.',
+        syncedCount: count,
+        message: 'Synced $count ${count == 1 ? 'record' : 'records'}.',
       );
     } catch (_) {
       return const SyncResult(

@@ -249,6 +249,9 @@ class DatabaseHelper {
         if (oldVersion < 3) {
           await _migrateV2ToV3(db);
         }
+        if (oldVersion < 4) {
+          await _migrateV3ToV4(db);
+        }
       },
       onOpen: (Database db) async {
         // Ensure a usable state even after a partial/legacy open.
@@ -412,14 +415,7 @@ class DatabaseHelper {
       )
     ''');
 
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS $_auditLogsTable (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        action TEXT NOT NULL,
-        performed_by TEXT NOT NULL,
-        timestamp TEXT NOT NULL
-      )
-    ''');
+    await _createAuditSchema(db);
 
     // Session and theme preferences are stored in SQLite so the app has no
     // additional dependency and works fully offline.
@@ -441,10 +437,6 @@ class DatabaseHelper {
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_expenses_submitted_by '
       'ON $_expensesTable(submitted_by)',
-    );
-    await db.execute(
-      'CREATE INDEX IF NOT EXISTS idx_audit_timestamp '
-      'ON $_auditLogsTable(timestamp)',
     );
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_users_username '
@@ -518,6 +510,39 @@ class DatabaseHelper {
       'created_at = COALESCE(created_at, ?), '
       'updated_at = COALESCE(updated_at, COALESCE(created_at, ?))',
       <Object?>[now, now],
+    );
+  }
+
+  /// v3 -> v4: rebuild the audit trail as expense-only with explicit expense
+  /// linkage. Non-expense/session/login history is intentionally removed.
+  Future<void> _migrateV3ToV4(Database db) async {
+    await _createAuditSchema(db);
+  }
+
+  /// Expense-only audit schema (create/submit, stage transitions, reject/flag
+  /// with required remarks, and expense-related liquidation/sync actions).
+  Future<void> _createAuditSchema(Database db) async {
+    await db.execute('DROP TABLE IF EXISTS $_auditLogsTable');
+    await db.execute('''
+      CREATE TABLE $_auditLogsTable (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        expense_id INTEGER NOT NULL,
+        expense_title TEXT NOT NULL DEFAULT '',
+        amount REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT '',
+        action TEXT NOT NULL,
+        performed_by TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        remarks TEXT NOT NULL DEFAULT ''
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_audit_timestamp '
+      'ON $_auditLogsTable(timestamp DESC, id DESC)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_audit_expense '
+      'ON $_auditLogsTable(expense_id, timestamp DESC, id DESC)',
     );
   }
 
@@ -777,77 +802,120 @@ class DatabaseHelper {
     await addExpense(eventId: summitId, title: 'Speaker honorarium', amount: 4000, category: AppCategories.miscellaneous, status: ExpenseStatus.adviserApproved, submittedBy: bmId, daysAgo: 9);
     await addExpense(eventId: summitId, title: 'Workshop materials', amount: 2500, category: AppCategories.supplies, status: ExpenseStatus.pending, submittedBy: secretaryId, daysAgo: 1);
 
-    const String bmLabel = 'Bea Manalo · Business Manager';
-    const String secretaryLabel = 'Sam Rivera · Secretary';
-    const String treasurerLabel = 'Tessa Cruz · Treasurer';
-    const String auditorLabel = 'Audie Reyes · Auditor';
-    const String presidentLabel = 'Perry Santos · President';
-    const String adviserLabel = 'Ada Villanueva · Adviser';
+    final List<Map<String, Object?>> seededExpenses = await db.rawQuery('''
+      SELECT e.id, e.title, e.amount, e.status, e.remarks, e.created_at, e.submitted_by
+      FROM $_expensesTable e
+      ORDER BY e.id ASC
+    ''');
 
-    Future<void> audit(String action, String actor, DateTime timestamp) async {
-      await db.insert(_auditLogsTable, <String, Object?>{
-        'action': action,
-        'performed_by': actor,
-        'timestamp': timestamp.toIso8601String(),
-      });
+    String actorFor(UserRole role) {
+      return switch (role) {
+        UserRole.businessManager => 'Bea Manalo · Business Manager',
+        UserRole.secretary => 'Sam Rivera · Secretary',
+        UserRole.treasurer => 'Tessa Cruz · Treasurer',
+        UserRole.auditor => 'Audie Reyes · Auditor',
+        UserRole.president => 'Perry Santos · President',
+        UserRole.adviser => 'Ada Villanueva · Adviser',
+        UserRole.member => 'Member',
+      };
     }
 
-    Future<void> pipelineHistory({
-      required String title,
-      required int submittedBy,
-      required String status,
-      required DateTime submittedAt,
-    }) async {
-      final String submitter = submittedBy == bmId ? bmLabel : secretaryLabel;
-      await audit('Submitted "$title" for review', submitter, submittedAt);
+    for (final Map<String, Object?> row in seededExpenses) {
+      final int expenseId = (row['id'] as num?)?.toInt() ?? 0;
+      if (expenseId <= 0) continue;
+      final String title = (row['title']?.toString() ?? '').trim();
+      final double amount = (row['amount'] as num?)?.toDouble() ?? 0.0;
+      final String status =
+          ExpenseStatus.normalise(row['status']?.toString() ?? '');
+      final String remarks = (row['remarks']?.toString() ?? '').trim();
+      final int submittedBy = (row['submitted_by'] as num?)?.toInt() ?? 0;
+      final DateTime submittedAt =
+          DateTime.tryParse(row['created_at']?.toString() ?? '') ?? now;
+
+      Future<void> logSeedExpense({
+        required String expenseStatus,
+        required String action,
+        required String performedBy,
+        required DateTime timestamp,
+        String logRemarks = '',
+      }) async {
+        await db.insert(_auditLogsTable, <String, Object?>{
+          'expense_id': expenseId,
+          'expense_title': title,
+          'amount': amount,
+          'status': expenseStatus,
+          'action': action,
+          'performed_by': performedBy,
+          'timestamp': timestamp.toIso8601String(),
+          'remarks': logRemarks,
+        });
+      }
+
+      final String submitter = actorFor(
+        submittedBy == bmId ? UserRole.businessManager : UserRole.secretary,
+      );
+      await logSeedExpense(
+        expenseStatus: ExpenseStatus.pending,
+        action: 'Submitted expense for review',
+        performedBy: submitter,
+        timestamp: submittedAt,
+      );
+
       if (status == ExpenseStatus.rejected) {
-        await audit('Rejected "$title": receipt is not an organization expense', treasurerLabel, submittedAt.add(const Duration(hours: 4)));
-        return;
+        await logSeedExpense(
+          expenseStatus: ExpenseStatus.rejected,
+          action: 'Rejected expense',
+          performedBy: actorFor(UserRole.treasurer),
+          timestamp: submittedAt.add(const Duration(hours: 4)),
+          logRemarks: remarks,
+        );
+        continue;
       }
       if (status == ExpenseStatus.flagged) {
-        await audit('Flagged "$title" for receipt mismatch', auditorLabel, submittedAt.add(const Duration(hours: 5)));
-        return;
+        await logSeedExpense(
+          expenseStatus: ExpenseStatus.flagged,
+          action: 'Flagged expense for review',
+          performedBy: actorFor(UserRole.auditor),
+          timestamp: submittedAt.add(const Duration(hours: 5)),
+          logRemarks: remarks,
+        );
+        continue;
       }
+
       final int step = ExpenseStatus.step(status);
       if (step >= 2) {
-        await audit('Verified receipt and disbursement for "$title"', treasurerLabel, submittedAt.add(const Duration(hours: 6)));
+        await logSeedExpense(
+          expenseStatus: ExpenseStatus.treasurerVerified,
+          action: 'Verified receipt and disbursement',
+          performedBy: actorFor(UserRole.treasurer),
+          timestamp: submittedAt.add(const Duration(hours: 6)),
+        );
       }
       if (step >= 3) {
-        await audit('Checked arithmetic for "$title"', auditorLabel, submittedAt.add(const Duration(hours: 12)));
+        await logSeedExpense(
+          expenseStatus: ExpenseStatus.auditorChecked,
+          action: 'Checked arithmetic and compliance',
+          performedBy: actorFor(UserRole.auditor),
+          timestamp: submittedAt.add(const Duration(hours: 12)),
+        );
       }
       if (step >= 4) {
-        await audit('Endorsed "$title" for final approval', presidentLabel, submittedAt.add(const Duration(hours: 18)));
+        await logSeedExpense(
+          expenseStatus: ExpenseStatus.presidentEndorsed,
+          action: 'Endorsed expense for final approval',
+          performedBy: actorFor(UserRole.president),
+          timestamp: submittedAt.add(const Duration(hours: 18)),
+        );
       }
       if (step >= 5) {
-        await audit('Approved and locked "$title"', adviserLabel, submittedAt.add(const Duration(days: 1)));
+        await logSeedExpense(
+          expenseStatus: ExpenseStatus.adviserApproved,
+          action: 'Approved and locked liquidation',
+          performedBy: actorFor(UserRole.adviser),
+          timestamp: submittedAt.add(const Duration(days: 1)),
+        );
       }
     }
-
-    final List<({String title, int submittedBy, String status, int daysAgo})> pipeline =
-        <({String title, int submittedBy, String status, int daysAgo})>[
-      (title: 'Snacks for student volunteers', submittedBy: bmId, status: ExpenseStatus.pending, daysAgo: 1),
-      (title: 'Printing of participant ID laces', submittedBy: secretaryId, status: ExpenseStatus.pending, daysAgo: 0),
-      (title: 'Sound system rental', submittedBy: bmId, status: ExpenseStatus.treasurerVerified, daysAgo: 2),
-      (title: 'Medals and trophies', submittedBy: secretaryId, status: ExpenseStatus.auditorChecked, daysAgo: 4),
-      (title: 'Emergency medical kits', submittedBy: bmId, status: ExpenseStatus.presidentEndorsed, daysAgo: 5),
-      (title: 'Personal cloud storage renewal', submittedBy: secretaryId, status: ExpenseStatus.rejected, daysAgo: 6),
-      (title: 'Emergency extension cords', submittedBy: bmId, status: ExpenseStatus.flagged, daysAgo: 2),
-    ];
-    for (final ({String title, int submittedBy, String status, int daysAgo}) data in pipeline) {
-      await pipelineHistory(title: data.title, submittedBy: data.submittedBy, status: data.status, submittedAt: now.subtract(Duration(days: data.daysAgo)));
-    }
-
-    for (final ({String title, int submittedBy, int daysAgo}) item in <({String title, int submittedBy, int daysAgo})>[
-      (title: 'Catering balance for opening day', submittedBy: bmId, daysAgo: 18),
-      (title: 'Function hall reservation', submittedBy: secretaryId, daysAgo: 15),
-      (title: 'Sports supplies and materials', submittedBy: bmId, daysAgo: 11),
-      (title: 'Shuttle service for participants', submittedBy: secretaryId, daysAgo: 7),
-      (title: 'Tarpaulin and poster printing', submittedBy: bmId, daysAgo: 3),
-    ]) {
-      await pipelineHistory(title: item.title, submittedBy: item.submittedBy, status: ExpenseStatus.adviserApproved, submittedAt: now.subtract(Duration(days: item.daysAgo)));
-    }
-
-    await audit('Initialized OrgLedger with demo accounts and sample liquidation data', 'System', now.subtract(const Duration(minutes: 5)));
   }
 
   // ---------------------------------------------------------------------------

@@ -72,17 +72,15 @@ class _HomeShellState extends State<HomeShell> {
         showsFab: true,
       ),
     );
-    if (role.isOfficer) {
-      tabs.add(
-        const _ShellTab(
-          label: 'Audit',
-          icon: Icons.history_rounded,
-          selectedIcon: Icons.history_toggle_off_rounded,
-          screen: AuditLogScreen(),
-          isAudit: true,
-        ),
-      );
-    }
+    tabs.add(
+      const _ShellTab(
+        label: 'Audit',
+        icon: Icons.history_rounded,
+        selectedIcon: Icons.history_toggle_off_rounded,
+        screen: AuditLogScreen(),
+        isAudit: true,
+      ),
+    );
     tabs.add(
       const _ShellTab(
         label: 'Profile',

@@ -9,8 +9,9 @@ abstract final class AppConstants {
   static const String databaseName = 'org_ledger.db';
 
   /// Bumped for additive migrations (v2: username/member/active-status,
-  /// v3: budget event metadata/archiving). Migrations must preserve local data.
-  static const int databaseVersion = 3;
+  /// v3: budget event metadata/archiving, v4: expense-only audit trail with
+  /// expense linkage). Migrations must preserve local data.
+  static const int databaseVersion = 4;
 
   /// Compile-time flag for evaluation/demo builds. When false (default) the app
   /// does not seed demo accounts/data or expose demo credentials in the UI.

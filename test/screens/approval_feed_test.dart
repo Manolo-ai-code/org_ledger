@@ -114,7 +114,6 @@ class _StubSession extends UserRoleProvider {
   _StubSession({required this.role})
       : super(
           authRepository: AuthRepository(DatabaseHelper()),
-          auditRepository: AuditRepository(DatabaseHelper()),
           databaseHelper: DatabaseHelper(),
         );
 

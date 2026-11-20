@@ -210,7 +210,6 @@ class _TestSession extends UserRoleProvider {
   _TestSession({required this.user, required DatabaseHelper db})
       : super(
           authRepository: AuthRepository(db),
-          auditRepository: AuditRepository(db),
           databaseHelper: db,
         );
 
