@@ -6,6 +6,7 @@ import '../../core/theme/app_colors.dart';
 import '../../core/utils/app_format.dart';
 import '../../data/models/audit_log.dart';
 import '../../providers/audit_provider.dart';
+import '../../providers/user_role_provider.dart';
 import '../../widgets/banners.dart';
 import '../../widgets/empty_state.dart';
 
@@ -31,7 +32,10 @@ class _AuditLogScreenState extends State<AuditLogScreen> {
       if (!mounted) {
         return;
       }
-      context.read<AuditProvider>().load();
+      final session = context.read<UserRoleProvider>();
+      final audit = context.read<AuditProvider>();
+      audit.setViewer(session.currentUser);
+      audit.load();
     });
   }
 

@@ -1,6 +1,8 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../data/models/app_user.dart';
 import '../data/models/audit_log.dart';
+import '../data/models/user_role.dart';
 import '../data/repositories/audit_repository.dart';
 
 /// Loads the append-only audit trail for the audit log screen.
@@ -14,11 +16,24 @@ class AuditProvider extends ChangeNotifier {
   bool _loadedOnce = false;
   String? _error;
   bool _disposed = false;
+  bool _approvedOnly = false;
 
   List<AuditLog> get logs => List<AuditLog>.unmodifiable(_logs);
   bool get isLoading => _loading;
   bool get hasLoaded => _loadedOnce;
   String? get error => _error;
+
+  /// Sets viewer scope. Members only see audit entries for approved expenses.
+  void setViewer(AppUser? user) {
+    final bool approvedOnly = user?.role == UserRole.member;
+    if (_approvedOnly == approvedOnly) {
+      return;
+    }
+    _approvedOnly = approvedOnly;
+    _logs = <AuditLog>[];
+    _loadedOnce = false;
+    _error = null;
+  }
 
   Future<void> load({bool force = false}) async {
     if (_loading) {
@@ -32,7 +47,10 @@ class AuditProvider extends ChangeNotifier {
     _notify();
 
     try {
-      _logs = await _repository.getRecent(limit: 200);
+      _logs = await _repository.getRecent(
+        limit: 200,
+        approvedOnly: _approvedOnly,
+      );
       _loadedOnce = true;
     } catch (_) {
       _error = 'The audit trail could not be loaded. Tap refresh to retry.';
@@ -49,6 +67,7 @@ class AuditProvider extends ChangeNotifier {
     _loadedOnce = false;
     _loading = false;
     _error = null;
+    _approvedOnly = false;
     _notify();
   }
 

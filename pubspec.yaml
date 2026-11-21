@@ -1,7 +1,7 @@
-name: org_ledger
-description: "OrgLedger — offline-first expense tracking, budgeting, and PDF liquidation for student organizations."
+﻿name: org_ledger
+description: "OrgLedger â€” offline-first expense tracking, budgeting, and PDF liquidation for student organizations."
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.2+1
 
 environment:
   sdk: ^3.14.0

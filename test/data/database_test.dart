@@ -17,6 +17,7 @@ import 'package:org_ledger/data/repositories/expense_repository.dart';
 import 'package:org_ledger/data/services/connectivity_service.dart';
 import 'package:org_ledger/data/services/liquidation_pdf_service.dart';
 import 'package:org_ledger/data/services/sync_service.dart';
+import 'package:org_ledger/providers/audit_provider.dart';
 import 'package:org_ledger/providers/ledger_provider.dart';
 import 'package:org_ledger/providers/user_role_provider.dart';
 import 'package:path/path.dart' as p;
@@ -510,5 +511,89 @@ void main() {
     );
     expect(stale.success, isFalse);
     expect(stale.message, contains('no longer awaiting'));
+  });
+
+  test('members see approved expenses read-only and approved-only audit logs',
+      () async {
+    final ConnectivityService connectivity = ConnectivityService();
+    final LedgerProvider ledger = LedgerProvider(
+      expenseRepository: expenses,
+      auditRepository: audit,
+      syncService: SyncService(
+        expenseRepository: expenses,
+        auditRepository: audit,
+        connectivityService: connectivity,
+      ),
+      connectivityService: connectivity,
+      pdfService: const LiquidationPdfService(),
+    );
+    addTearDown(ledger.dispose);
+
+    final AppUser member = await auth.register(
+      name: 'Mina Member',
+      username: 'member1',
+      password: 'supersecret1',
+    );
+
+    await ledger.initialize(viewer: member);
+    expect(ledger.isInitialized, isTrue);
+    expect(ledger.expenses, isNotEmpty);
+    expect(
+      ledger.expenses.every((Expense expense) => expense.isApproved),
+      isTrue,
+    );
+    expect(
+      ledger.expenses.any((Expense expense) => expense.submittedBy != member.id),
+      isTrue,
+      reason: 'Members should see approved expenses submitted by officers.',
+    );
+    expect(
+      ledger.expenses.any((Expense expense) => expense.isPending),
+      isFalse,
+    );
+
+    final LedgerActionResult submit = await ledger.submitExpense(
+      user: member,
+      title: 'Should not be allowed',
+      amount: 100,
+      category: AppCategories.miscellaneous,
+    );
+    expect(submit.success, isFalse);
+    expect(submit.message, contains('read-only'));
+
+    final Expense approved = ledger.expenses.first;
+    final Expense nonApproved =
+        (await expenses.getExpenses(eventId: approved.eventId)).firstWhere(
+      (Expense expense) => !expense.isApproved,
+    );
+    await audit.logExpenseAction(
+      expense: approved,
+      action: 'Included in liquidation report export',
+      performedBy: 'Ada Villanueva · Adviser',
+      status: ExpenseStatus.adviserApproved,
+    );
+    await audit.logExpenseAction(
+      expense: nonApproved,
+      action: 'Submitted expense for review',
+      performedBy: 'Bea Manalo · Business Manager',
+      status: nonApproved.status,
+    );
+
+    final AuditProvider auditProvider = AuditProvider(audit);
+    addTearDown(auditProvider.dispose);
+    auditProvider.setViewer(member);
+    await auditProvider.load();
+    expect(auditProvider.logs, isNotEmpty);
+    expect(
+      auditProvider.logs.any((AuditLog log) => log.expenseId == approved.id),
+      isTrue,
+      reason: 'Approved expense audit log should be visible to members.',
+    );
+    expect(
+      auditProvider.logs
+          .any((AuditLog log) => log.expenseId == nonApproved.id),
+      isFalse,
+      reason: 'Members should not see audit logs for non-approved expenses.',
+    );
   });
 }

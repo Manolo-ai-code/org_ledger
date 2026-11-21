@@ -103,9 +103,17 @@ class LedgerProvider extends ChangeNotifier {
   AppUser? _viewer;
 
   /// Sets the current viewer for role/member-scoped visibility.
-  /// Members only see expenses they submitted; officers/reviewers see all.
+  /// Members have read-only access to all approved expenses; officers/reviewers
+  /// see all expenses for the selected event.
   void setViewer(AppUser? user) {
+    final int? oldId = _viewer?.id;
+    final UserRole? oldRole = _viewer?.role;
     _viewer = user;
+    final bool changed = oldId != user?.id || oldRole != user?.role;
+    if (changed && _expenses.isNotEmpty) {
+      _expenses = _scopeForViewer(_expenses);
+      _notify();
+    }
   }
 
   List<Expense> _scopeForViewer(List<Expense> expenses) {
@@ -115,7 +123,7 @@ class LedgerProvider extends ChangeNotifier {
     }
     if (viewer.role == UserRole.member) {
       return expenses
-          .where((Expense expense) => expense.submittedBy == viewer.id)
+          .where((Expense expense) => expense.isApproved)
           .toList(growable: false);
     }
     return expenses;

@@ -259,6 +259,7 @@ class _AuthGateState extends State<AuthGate> {
         return;
       }
       try {
+        context.read<AuditProvider>().setViewer(session.currentUser);
         await ledger.initialize(viewer: session.currentUser);
       } catch (_) {
         // The provider stores a friendly error and the dashboard exposes a

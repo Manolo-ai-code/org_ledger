@@ -78,13 +78,36 @@ class AuditRepository {
     });
   }
 
-  Future<List<AuditLog>> getRecent({int limit = 150}) async {
+  Future<List<AuditLog>> getRecent({
+    int limit = 150,
+    bool approvedOnly = false,
+  }) async {
     final Database db = await _db.database;
-    final List<Map<String, Object?>> rows = await db.query(
-      _db.auditLogsTable,
-      orderBy: 'timestamp DESC, id DESC',
-      limit: limit > 0 ? limit : 150,
-    );
+    final int safeLimit = limit > 0 ? limit : 150;
+    final List<Map<String, Object?>> rows;
+    if (approvedOnly && await _hasColumn(db, 'expense_id')) {
+      rows = await db.rawQuery(
+        '''
+        SELECT a.*
+        FROM ${_db.auditLogsTable} a
+        INNER JOIN ${_db.expensesTable} e ON e.id = a.expense_id
+        WHERE a.expense_id > 0 AND e.status = ?
+        ORDER BY a.timestamp DESC, a.id DESC
+        LIMIT ?
+        ''',
+        <Object?>['Adviser_Approved', safeLimit],
+      );
+    } else if (approvedOnly) {
+      // Legacy schema fallback: without expense linkage we cannot prove an
+      // expense is approved, so return no logs for approved-only viewers.
+      rows = const <Map<String, Object?>>[];
+    } else {
+      rows = await db.query(
+        _db.auditLogsTable,
+        orderBy: 'timestamp DESC, id DESC',
+        limit: safeLimit,
+      );
+    }
     final List<AuditLog> logs = rows
         .map((Map<String, Object?> row) => AuditLog.fromMap(row))
         .where((AuditLog log) => _isExpenseLog(log))
